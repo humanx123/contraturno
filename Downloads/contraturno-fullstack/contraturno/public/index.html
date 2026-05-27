@@ -1,0 +1,478 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Contraturno - Escritura pública fuera del turno oficial">
+  <title>Contraturno</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<header class="header">
+  <div class="header-inner">
+    <h1 class="logo">
+      <a href="/" class="logo-link">Contraturno</a>
+    </h1>
+    <p class="tagline">Escritura pública fuera del turno oficial</p>
+  </div>
+</header>
+
+<nav class="navbar">
+  <ul class="nav-list">
+    <li><a href="/" class="nav-link" data-nav="home">Inicio</a></li>
+    <li><a href="/editor" class="nav-link" data-nav="editor">Escribir</a></li>
+    <li><a href="/usuario" class="nav-link" data-nav="user">Perfil</a></li>
+    <li><a href="/legal" class="nav-link" data-nav="legal">Legal</a></li>
+  </ul>
+  <button class="theme-toggle" id="themeToggle" title="Alternar tema">🌙</button>
+</nav>
+
+<main class="container">
+  <!-- HOME PAGE -->
+  <section data-page="home" class="page active-page">
+    <div class="page-wrapper">
+      <div class="main-column">
+        <div id="feedContainer" class="feed-container"></div>
+
+        <template id="cardTemplate">
+          <article class="post-card">
+            <h2 class="post-card-title"><a href="/p/[slug]">[title]</a></h2>
+            <p class="post-card-meta">Por <strong>[author]</strong> • <time>[date]</time></p>
+            <p class="post-card-excerpt">[excerpt]</p>
+            <div class="post-card-tags">
+              <span class="tag">[tag]</span>
+            </div>
+          </article>
+        </template>
+      </div>
+      <aside class="sidebar">
+        <div class="sidebar-widget">
+          <h3>Acerca de Contraturno</h3>
+          <p>Plataforma de escritura colectiva, libre y abierta. Publica sin turnos ni permisos.</p>
+        </div>
+        <div class="sidebar-widget">
+          <h3>Navegación</h3>
+          <ul>
+            <li><a href="/legal">Términos y condiciones</a></li>
+            <li><a href="/editor">Escribir un artículo</a></li>
+          </ul>
+        </div>
+        <div id="followedAuthorsWidget" class="sidebar-widget">
+          <h3>Autores seguidos</h3>
+          <p>No sigues a nadie aún.</p>
+        </div>
+      </aside>
+    </div>
+  </section>
+
+  <!-- EDITOR PAGE -->
+  <section data-page="editor" class="page">
+    <div class="page-wrapper">
+      <div class="main-column">
+        <div id="editorContainer" class="editor-container">
+          <div id="authSection" class="auth-section">
+            <div class="auth-tabs">
+              <button class="auth-tab active" data-tab="login">Iniciar sesión</button>
+              <button class="auth-tab" data-tab="register">Crear cuenta</button>
+            </div>
+
+            <!-- LOGIN -->
+            <form id="loginForm" class="auth-form">
+              <div class="form-group">
+                <label for="loginNickname">Nickname</label>
+                <input type="text" id="loginNickname" placeholder="Tu pseudónimo" autocomplete="username" required>
+              </div>
+              <div class="form-group">
+                <label for="loginPassword">Contraseña</label>
+                <input type="password" id="loginPassword" placeholder="Tu contraseña" autocomplete="current-password" required>
+              </div>
+              <div class="form-group">
+                <button type="submit" id="loginBtn" class="btn btn-primary">Entrar</button>
+              </div>
+            </form>
+
+            <!-- REGISTER -->
+            <form id="registerForm" class="auth-form" style="display:none;">
+              <div class="form-group">
+                <label for="authNickname">Nickname <span class="required">*</span></label>
+                <input type="text" id="authNickname" placeholder="Solo letras, números, guiones" autocomplete="username" required>
+                <p class="help-text">Este nombre aparecerá en tus artículos. No se puede cambiar después.</p>
+              </div>
+              <div class="form-group">
+                <label for="authPassword">Contraseña <span class="required">*</span></label>
+                <input type="password" id="authPassword" placeholder="Mínimo 6 caracteres" autocomplete="new-password" required>
+              </div>
+              <div class="form-group">
+                <label for="authEmail">Correo (opcional)</label>
+                <input type="email" id="authEmail" placeholder="Para recuperar acceso" autocomplete="email">
+              </div>
+              <div class="form-group">
+                <button type="submit" id="authRegister" class="btn btn-primary">Crear cuenta</button>
+              </div>
+            </form>
+          </div>
+
+          <div id="editorSection" class="editor-section" style="display:none;">
+            <form id="editorForm" class="editor-form">
+              <div class="form-group">
+                <label for="postTitle">Título *</label>
+                <input type="text" id="postTitle" placeholder="Título del artículo" required>
+              </div>
+              <div class="form-group">
+                <label for="postSubtitle">Subtítulo</label>
+                <input type="text" id="postSubtitle" placeholder="Breve resumen">
+              </div>
+              <div class="form-group">
+                <label for="postExcerpt">Extracto</label>
+                <input type="text" id="postExcerpt" placeholder="Primeras líneas para el feed">
+              </div>
+              <div class="form-group">
+                <label for="postTags">Etiquetas (separadas por coma)</label>
+                <input type="text" id="postTags" placeholder="tecnología, política, cultura">
+              </div>
+              <div class="form-group">
+                <label for="postLicense">Licencia</label>
+                <select id="postLicense">
+                  <option value="CC-BY-NC-SA-4.0">CC-BY-NC-SA-4.0 (Recomendado)</option>
+                  <option value="CC-BY-4.0">CC-BY-4.0</option>
+                  <option value="CC0">Dominio público (CC0)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="postBody">Contenido *</label>
+                <div id="postBody" class="editor-body" contenteditable="true" placeholder="Escribe aquí..." required></div>
+              </div>
+              <div class="form-actions">
+                <button type="button" id="saveDraft" class="btn btn-secondary">Guardar borrador</button>
+                <button type="button" id="publishPost" class="btn btn-primary">Publicar</button>
+                <a href="#" id="myTexts" class="btn btn-link">Mis textos</a>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- USER/PROFILE PAGE -->
+  <section data-page="user" class="page">
+    <div class="page-wrapper">
+      <div class="main-column">
+        <div id="userContainer" class="user-container">
+          <h2>Mi perfil y configuración</h2>
+
+          <div id="authorPageContainer" class="author-page" style="display:none;">
+            <div id="authorProfileHeader" class="author-profile-header"></div>
+            <div id="authorPostsList" class="author-posts-list"></div>
+          </div>
+
+          <form id="userForm" class="user-form">
+            <fieldset>
+              <legend>Donaciones directas</legend>
+              <div class="form-group">
+                <label for="userDonationUrl">URL de donación</label>
+                <input type="url" id="userDonationUrl" placeholder="https://tu-sitio.com/donar">
+                <p class="help-text">Link a tu método de donación (Paypal, BuyMeACoffee, etc.)</p>
+              </div>
+            </fieldset>
+
+            <fieldset>
+              <legend>Cómputo voluntario (CoinIMP/MintMe)</legend>
+
+              <div class="form-group">
+                <label>
+                  <input type="checkbox" id="userComputeEnabled">
+                  Habilitar minería voluntaria en mis artículos
+                </label>
+              </div>
+
+              <details class="coinimp-instructions">
+                <summary>¿Cómo obtener tu código de CoinIMP? (clic para ver)</summary>
+                <ol class="instructions-list">
+                  <li>Entrá a <a href="https://www.coinimp.com/invite/f1026f36-30a1-423d-8356-58dd60870a87" target="_blank" rel="noopener">coinimp.com</a> y creá una cuenta gratuita.</li>
+                  <li>En el dashboard, hacé clic en <strong>"Sites"</strong> → <strong>"Add new site"</strong>. Ingresá el nombre de tu sitio y guardá.</li>
+                  <li>En la lista de sitios, hacé clic en el nombre de tu sitio para ver el código de integración.</li>
+                  <li>Aparece un modal con el snippet. Antes de copiar, <strong>configurá las opciones</strong>:
+                    <ul class="instructions-sublist">
+                      <li>☐ <strong>Desactivá</strong> "Show our advertisement on your site" — evita que aparezca publicidad de CoinIMP.</li>
+                      <li>☐ <strong>Desactivá</strong> "Block showing your site content until mining is allowed" — nunca bloquees el contenido al lector.</li>
+                      <li>☑ <strong>Dejá activado</strong> "Add a notification on your site about ongoing mining" — transparencia con el lector.</li>
+                    </ul>
+                  </li>
+                  <li>Hacé clic en <strong>"Copy to clipboard"</strong> para copiar el código completo.</li>
+                  <li>Pegalo en el campo de abajo. Tu clave pública (la que aparece al pie como <em>Public: 42a6…</em>) y la URL del script se extraen automáticamente.</li>
+                </ol>
+                <p class="help-text">
+                  El snippet copiado tiene este aspecto:<br>
+                  <code>&lt;script src="https://www.coinimp.com/..."&gt;&lt;/script&gt;<br>
+                  &lt;script&gt;var _client = new Client.Anonymous('<strong>TU_CLAVE_PÚBLICA</strong>', {throttle: 0, c: 'w'});&lt;/script&gt;</code>
+                </p>
+                <p class="help-text" style="margin-top:0.5rem;">
+                  ⚠️ Contraturno <strong>nunca carga este script automáticamente</strong>. El lector verá un modal y debe aceptar explícitamente antes de que empiece cualquier cómputo.
+                </p>
+              </details>
+
+              <div class="form-group" style="margin-top:1rem;">
+                <label for="userCoinimpEmbedCode">Código de integración CoinIMP</label>
+                <textarea id="userCoinimpEmbedCode" rows="5" placeholder="Pegá aquí el snippet completo copiado desde el dashboard de CoinIMP"></textarea>
+                <p class="help-text">Se extraerán automáticamente la URL del script y la clave del sitio.</p>
+              </div>
+
+              <!-- Campos ocultos, se llenan al guardar -->
+              <input type="hidden" id="userCoinimpSiteKey">
+              <input type="hidden" id="userCoinimpScriptUrl">
+
+              <p class="info-box">
+                <strong>Importante:</strong> El script solo se cargará si el lector lo acepta explícitamente.
+                Nunca hay minería automática. El lector puede detenerla en cualquier momento.
+              </p>
+            </fieldset>
+
+            <fieldset id="coinimpApiFieldset">
+              <legend>Panel CoinIMP — Estadísticas y balance</legend>
+              <details class="coinimp-instructions" style="margin-bottom:1rem;">
+                <summary>¿Cómo obtener tus claves API de CoinIMP? (clic para ver)</summary>
+                <ol class="instructions-list">
+                  <li>Entrá a <a href="https://www.coinimp.com/invite/f1026f36-30a1-423d-8356-58dd60870a87" target="_blank" rel="noopener">coinimp.com</a> con tu cuenta.</li>
+                  <li>En el menú superior hacé clic en <strong>API</strong>.</li>
+                  <li>Si no tenés claves generadas, hacé clic en <strong>"Generate"</strong>. Si ya las tenés y querés nuevas, usá <strong>"Revoke"</strong> primero y luego volvé a generar.</li>
+                  <li>Aparecen dos claves:
+                    <ul class="instructions-sublist">
+                      <li><strong>Public Key</strong> → copiala y pegala en el campo <em>"API Key pública"</em> de abajo.</li>
+                      <li><strong>Private Key</strong> → copiala y pegala en el campo <em>"API Key privada"</em> de abajo.</li>
+                    </ul>
+                  </li>
+                  <li>Hacé clic en <strong>"Guardar cambios"</strong> en esta página.</li>
+                  <li>Luego hacé clic en <strong>"📊 Cargar mis estadísticas"</strong> para ver tu balance y hashes acumulados.</li>
+                </ol>
+                <p class="help-text" style="margin-top:0.5rem;">⚠️ La <strong>Private Key</strong> es secreta — no la compartas con nadie. Podés revocarla en cualquier momento desde CoinIMP → API.</p>
+              </details>
+              <div class="form-group">
+                <label for="coinimpApiId">API Key pública <span class="help-text" style="display:inline">(Public Key)</span></label>
+                <input type="text" id="coinimpApiId" placeholder="La clave pública generada en CoinIMP → API" autocomplete="off">
+              </div>
+              <div class="form-group">
+                <label for="coinimpApiKey">API Key privada <span class="help-text" style="display:inline">(Private Key)</span></label>
+                <input type="password" id="coinimpApiKey" placeholder="La clave privada — no la compartas con nadie" autocomplete="off">
+                <p class="help-text">Ambas claves se guardan cifradas en el servidor. Solo vos las ves. Podés revocarlas en cualquier momento desde CoinIMP → API.</p>
+              </div>
+
+              <!-- Stats panel -->
+              <div id="coinimpStatsPanel" style="display:none" class="coinimp-stats-panel">
+                <div class="stats-grid">
+                  <div class="stat-card">
+                    <span class="stat-label">Balance pendiente</span>
+                    <span class="stat-value" id="statBalance">—</span>
+                    <span class="stat-unit">MINTME</span>
+                  </div>
+                  <div class="stat-card">
+                    <span class="stat-label">Hashes totales</span>
+                    <span class="stat-value" id="statHashes">—</span>
+                    <span class="stat-unit">H</span>
+                  </div>
+                </div>
+                <p class="stats-updated" id="statsUpdatedAt"></p>
+                <a href="https://www.mintme.com" target="_blank" rel="noopener" class="btn btn-secondary" style="margin-top:0.5rem;font-size:0.85rem;">
+                  💰 Ver wallet en MintMe.com →
+                </a>
+              </div>
+              <button type="button" id="loadCoinimpStats" class="btn btn-secondary" style="margin-top:0.75rem;">
+                📊 Cargar mis estadísticas
+              </button>
+            </fieldset>
+
+            <div class="form-actions">
+              <button type="button" id="saveProfile" class="btn btn-primary">Guardar cambios</button>
+              <button type="button" id="logout" class="btn btn-secondary">Cerrar sesión</button>
+            </div>
+          </form>
+
+          <details id="changePasswordSection" style="margin-top:2rem;">
+            <summary style="cursor:pointer; font-weight:600; color:var(--color-secondary);">🔑 Cambiar contraseña</summary>
+            <div style="margin-top:1rem;">
+              <div class="form-group">
+                <label for="newPassword">Nueva contraseña (mín. 6 caracteres)</label>
+                <input type="password" id="newPassword" autocomplete="new-password">
+              </div>
+              <div class="form-group">
+                <label for="newPasswordConfirm">Confirmar contraseña</label>
+                <input type="password" id="newPasswordConfirm" autocomplete="new-password">
+              </div>
+              <button type="button" id="changePasswordBtn" class="btn btn-primary">Actualizar contraseña</button>
+            </div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LEGAL PAGE -->
+  <section data-page="legal" class="page">
+    <div class="page-wrapper">
+      <div class="main-column">
+        <article class="legal-content">
+          <h1>Términos y condiciones</h1>
+
+          <h2>1. Bienvenida a Contraturno</h2>
+          <p>
+            Contraturno es una plataforma de escritura pública, colaborativa y abierta.
+            Nos comprometemos a mantener un espacio seguro, confiable y respetuoso.
+          </p>
+
+          <h2>2. Responsabilidad de publicación</h2>
+          <p>
+            Como autor/a, eres responsable del contenido que publiques.
+            Contraturno NO se hace responsable por:
+          </p>
+          <ul>
+            <li>Afirmaciones, opiniones o datos publicados</li>
+            <li>Daños derivados de la lectura o uso del contenido</li>
+            <li>Infracciones de derechos de terceros</li>
+          </ul>
+
+          <h2>3. Moderación mínima</h2>
+          <p>
+            Nos reservamos el derecho de:
+          </p>
+          <ul>
+            <li>Ocultar contenido ilegal, de odio, violencia o explotación</li>
+            <li>Solicitar la eliminación de contenido que viole estos términos</li>
+            <li>Suspender cuentas que incumplan reiteradamente</li>
+          </ul>
+
+          <h2>4. Propiedad intelectual</h2>
+          <p>
+            Todo contenido publicado permanece bajo tu propiedad y licencia elegida (CC-BY-NC-SA-4.0 u otra).
+            Contraturno no reclama propiedad sobre tu contenido.
+          </p>
+
+          <h2>5. Cómputo voluntario</h2>
+          <p>
+            Si habilitas minería voluntaria:
+          </p>
+          <ul>
+            <li>El script NUNCA se cargará automáticamente</li>
+            <li>Los lectores deben aceptar explícitamente un modal informativo</li>
+            <li>Pueden detener la minería en cualquier momento</li>
+            <li>Eres responsable de transparencia sobre este uso</li>
+          </ul>
+
+          <h2>6. Privacidad</h2>
+          <p>
+            No almacenamos datos personales sin consentimiento.
+            Las cookies se usan solo para persistencia local (tema, token).
+          </p>
+
+          <hr>
+          <p><small>Última actualización: 2025. Contraturno es software libre bajo licencia abierta.</small></p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- READER PAGE (Dynamic post) -->
+  <section data-page="reader" class="page">
+    <div class="page-wrapper">
+      <div class="main-column">
+        <article id="readerContainer" class="reader-container">
+          <!-- Cargado dinámicamente -->
+        </article>
+      </div>
+      <aside class="sidebar">
+        <div id="authorWidget" class="sidebar-widget">
+          <!-- Cargado dinámicamente -->
+        </div>
+      </aside>
+    </div>
+  </section>
+</main>
+
+<!-- DIALOGS -->
+<dialog id="readerDialog" class="reader-dialog">
+  <form method="dialog">
+    <button type="submit" class="dialog-close">&times;</button>
+  </form>
+  <div id="dialogContent"></div>
+</dialog>
+
+<dialog id="computeDialog" class="compute-dialog">
+  <div class="compute-dialog-content">
+    <button type="button" class="dialog-close" id="computeClose">&times;</button>
+
+    <!-- Vista: oferta inicial -->
+    <div id="computeOfferView">
+      <h3 class="compute-title">⚡ Apoyá a este autor</h3>
+      <p class="compute-intro">Este autor comparte su escritura libremente. Podés apoyar su trabajo donando un poco de poder de cómputo de tu CPU — voluntario, sin instalar nada, podés detenerlo cuando quieras.</p>
+
+      <div class="power-selector">
+        <p class="power-label">¿Cuánto poder querés donar?</p>
+        <div class="power-grid" id="powerGrid">
+          <button class="power-btn" data-pct="10">10%</button>
+          <button class="power-btn" data-pct="20">20%</button>
+          <button class="power-btn" data-pct="30">30%</button>
+          <button class="power-btn" data-pct="40">40%</button>
+          <button class="power-btn" data-pct="50">50%</button>
+          <button class="power-btn" data-pct="60">60%</button>
+          <button class="power-btn" data-pct="70">70%</button>
+          <button class="power-btn" data-pct="80">80%</button>
+          <button class="power-btn active" data-pct="100">100%</button>
+        </div>
+        <p class="power-hint" id="powerHint">Donando el 100% disponible de tu CPU</p>
+      </div>
+
+      <div class="form-actions">
+        <button type="button" id="computeStart" class="btn btn-primary">⚡ Donar cómputo</button>
+        <button type="button" id="computeCancel" class="btn btn-secondary">Ahora no</button>
+      </div>
+    </div>
+
+    <!-- Vista: minería activa (placeholder, la UI real es #miningFloat) -->
+    <div id="computeRunningView" style="display:none"></div>
+
+    <!-- Vista: canceló -->
+    <div id="computeCancelView" style="display:none">
+      <p class="compute-thanks">¡Gracias por leer!</p>
+      <p>Si querés apoyar al autor de otra manera:</p>
+      <div id="cancelDonationLinks" style="margin:1rem 0;"></div>
+      <button type="button" id="computeStartLater" class="btn btn-primary" style="margin-top:0.5rem;">⚡ Activar cómputo igual</button>
+    </div>
+
+  </div>
+</dialog>
+
+<script type="module" src="/app.js"></script>
+
+<!-- PLATFORM SUPPORT BUTTON (fixed bottom-left) -->
+<button id="platformSupportBtn" title="Apoyar a Contraturno con cómputo voluntario">
+  ⚡ Apoyar a Contraturno
+</button>
+
+<!-- MINING FLOAT WIDGET (non-blocking, draggable) -->
+<div id="miningFloat" style="display:none">
+  <div id="miningFloatHandle" class="mining-float-handle">
+    <span>⚡ Cómputo activo</span>
+    <div class="mining-float-actions">
+      <button id="miningFloatToggle" title="Minimizar" class="mining-float-btn">—</button>
+      <button id="miningFloatClose" title="Detener y cerrar" class="mining-float-btn">✕</button>
+    </div>
+  </div>
+  <div id="miningFloatBody">
+    <div class="hash-display">
+      <div class="hash-count-box">
+        <span id="hashCount">0</span>
+        <small>hashes donados</small>
+      </div>
+      <div class="hash-count-box">
+        <span id="hashRate">—</span>
+        <small>H/s estimado</small>
+      </div>
+    </div>
+    <p id="hashContrib" class="hash-contrib">Contribución: iniciando…</p>
+    <p class="power-active">Poder: <strong id="activePowerLabel">100%</strong></p>
+    <button type="button" id="computeStop" class="btn btn-secondary" style="margin-top:0.75rem;width:100%;">Detener donación</button>
+  </div>
+</div>
+
+</body>
+</html>

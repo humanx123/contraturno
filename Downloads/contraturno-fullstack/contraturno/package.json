@@ -1,0 +1,29 @@
+{
+    "name": "contraturno",
+    "version": "0.1.0",
+    "private": true,
+    "description": "Contraturno: plataforma editorial colectiva, crítica y open source sobre Cloudflare Pages Functions + D1.",
+    "type": "module",
+    "scripts": {
+        "dev": "node dev-server.js",
+        "dev:wrangler": "wrangler pages dev public --compatibility-date=2025-05-15 --no-show-interactive-dev-session",
+        "dev:local-db": "wrangler d1 migrations apply contraturno-db --local && wrangler pages dev public --compatibility-date=2025-05-15 --no-show-interactive-dev-session",
+        "db:create": "wrangler d1 create contraturno-db",
+        "db:migrate:local": "wrangler d1 migrations apply contraturno-db --local",
+        "db:migrate:remote": "wrangler d1 migrations apply contraturno-db --remote",
+        "pages:create": "wrangler pages project create contraturno --production-branch=main",
+        "deploy": "wrangler pages deploy public --project-name=contraturno",
+        "check": "node --check public/app.js && node --check functions/api/register.js && node --check functions/api/posts.js && node --check functions/api/comments.js && node --check functions/api/report.js && node --check functions/api/profile.js && node --check functions/api/schema.js"
+    },
+    "devDependencies": {
+        "wrangler": "3.78.0",
+        "better-sqlite3": "^11.10.0"
+    },
+    "volta": {
+        "node": "20.19.2"
+    },
+    "engines": {
+        "node": ">=20 <24"
+    },
+    "license": "AGPL-3.0-or-later"
+}

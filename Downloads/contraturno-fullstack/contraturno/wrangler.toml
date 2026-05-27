@@ -1,0 +1,14 @@
+name = "contraturno"
+compatibility_date = "2026-05-26"
+pages_build_output_dir = "public"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "contraturno-db"
+database_id = "REPLACE_WITH_D1_ID"
+
+[vars]
+APP_NAME = "Contraturno"
+APP_LEMA = "Escritura pública fuera del turno oficial"
+PLATFORM_COINIMP_SITE_KEY = "a566732126f7254fd40f1dca222e2ff0cdf6d725afc3a5a37d5052287768b199"
+PLATFORM_COINIMP_SCRIPT_URL = "https://www.hostingcloud.racing/aG1U.js"
