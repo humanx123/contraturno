@@ -321,6 +321,8 @@ function setupEditorEvents() {
     registerUser(nickname, password, email);
   };
 
+  setupToolbar();
+
   const saveDraftBtn = document.getElementById('saveDraft');
   const publishBtn = document.getElementById('publishPost');
   const myTextsLink = document.getElementById('myTexts');
@@ -1043,6 +1045,145 @@ function formatElapsed(seconds) {
   if (seconds < 60) return `${Math.round(seconds)}s`;
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s`;
   return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+}
+
+// ============================================================================
+// EDITOR TOOLBAR
+// ============================================================================
+
+function setupToolbar() {
+  const body = document.getElementById('postBody');
+  if (!body) return;
+
+  // Basic commands
+  document.querySelectorAll('.tb-btn[data-cmd]').forEach(btn => {
+    btn.onclick = () => {
+      const cmd = btn.dataset.cmd;
+      const val = btn.dataset.val || null;
+      body.focus();
+      document.execCommand(cmd, false, val);
+    };
+  });
+
+  // Track active state
+  body.addEventListener('keyup', updateToolbarState);
+  body.addEventListener('mouseup', updateToolbarState);
+  body.addEventListener('selectionchange', updateToolbarState);
+
+  // ── Link ──
+  document.getElementById('tbLink').onclick = () => {
+    const sel = window.getSelection();
+    const text = sel?.toString();
+    const url = prompt('URL del enlace:', 'https://');
+    if (!url) return;
+    body.focus();
+    if (text) {
+      document.execCommand('createLink', false, url);
+    } else {
+      const label = prompt('Texto del enlace:', url) || url;
+      document.execCommand('insertHTML', false, `<a href="${url}" target="_blank" rel="noopener">${label}</a>`);
+    }
+  };
+
+  // ── Image upload ──
+  const imgInput = document.getElementById('imageUpload');
+  document.getElementById('tbImage').onclick = () => imgInput.click();
+  imgInput.onchange = () => {
+    const file = imgInput.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = e => {
+      body.focus();
+      document.execCommand('insertHTML', false, `<img src="${e.target.result}" alt="${file.name}">`);
+    };
+    reader.readAsDataURL(file);
+    imgInput.value = '';
+  };
+
+  // ── Emoji picker ──
+  const emojiPicker = document.getElementById('emojiPicker');
+  document.getElementById('tbEmoji').onclick = (e) => {
+    e.stopPropagation();
+    emojiPicker.style.display = emojiPicker.style.display === 'none' ? 'block' : 'none';
+  };
+  emojiPicker.querySelector('.emoji-grid').onclick = (e) => {
+    const char = e.target.textContent.trim();
+    if (!char) return;
+    body.focus();
+    document.execCommand('insertText', false, char);
+    emojiPicker.style.display = 'none';
+  };
+  document.addEventListener('click', () => { emojiPicker.style.display = 'none'; });
+
+  // ── HTML/CSS modal ──
+  const htmlModal = document.getElementById('htmlModal');
+  document.getElementById('tbHtml').onclick = () => { htmlModal.style.display = 'flex'; };
+  document.getElementById('htmlCancel').onclick = () => { htmlModal.style.display = 'none'; };
+  document.getElementById('htmlInsert').onclick = () => {
+    const html = document.getElementById('htmlInput').value.trim();
+    if (!html) return;
+    body.focus();
+    document.execCommand('insertHTML', false, html);
+    document.getElementById('htmlInput').value = '';
+    htmlModal.style.display = 'none';
+  };
+
+  // ── Draw canvas ──
+  const drawModal = document.getElementById('drawModal');
+  const canvas = document.getElementById('drawCanvas');
+  const ctx = canvas.getContext('2d');
+  let drawing = false;
+
+  ctx.fillStyle = '#1a1a1a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  const getPos = e => {
+    const r = canvas.getBoundingClientRect();
+    const src = e.touches ? e.touches[0] : e;
+    return { x: src.clientX - r.left, y: src.clientY - r.top };
+  };
+
+  canvas.addEventListener('pointerdown', e => {
+    drawing = true;
+    const p = getPos(e);
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.strokeStyle = document.getElementById('drawColor').value;
+    ctx.lineWidth = document.getElementById('drawSize').value;
+    ctx.lineCap = 'round';
+  });
+  canvas.addEventListener('pointermove', e => {
+    if (!drawing) return;
+    const p = getPos(e);
+    ctx.lineTo(p.x, p.y);
+    ctx.stroke();
+  });
+  canvas.addEventListener('pointerup', () => { drawing = false; });
+
+  document.getElementById('tbDraw').onclick = () => {
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    drawModal.style.display = 'flex';
+  };
+  document.getElementById('drawClear').onclick = () => {
+    ctx.fillStyle = '#1a1a1a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  };
+  document.getElementById('drawCancel').onclick = () => { drawModal.style.display = 'none'; };
+  document.getElementById('drawInsert').onclick = () => {
+    const dataUrl = canvas.toDataURL('image/png');
+    body.focus();
+    document.execCommand('insertHTML', false, `<img src="${dataUrl}" alt="dibujo">`);
+    drawModal.style.display = 'none';
+  };
+}
+
+function updateToolbarState() {
+  const cmds = ['bold','italic','underline','strikeThrough','justifyLeft','justifyCenter','justifyRight','justifyFull','insertUnorderedList','insertOrderedList'];
+  cmds.forEach(cmd => {
+    const btn = document.querySelector(`.tb-btn[data-cmd="${cmd}"]`);
+    if (btn) btn.classList.toggle('active', document.queryCommandState(cmd));
+  });
 }
 
 // ============================================================================

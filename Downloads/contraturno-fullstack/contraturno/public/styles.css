@@ -467,26 +467,127 @@ body {
   /* */
 }
 
+/* ── Toolbar ── */
+.editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  align-items: center;
+  background: var(--color-surface, #1a1a1a);
+  border: 1px solid var(--color-border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  padding: 0.4rem 0.5rem;
+}
+.tb-group { display: flex; gap: 2px; }
+.tb-sep { width: 1px; background: var(--color-border); margin: 2px 4px; align-self: stretch; }
+.tb-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--color-text);
+  cursor: pointer;
+  font-size: 0.82rem;
+  padding: 4px 7px;
+  line-height: 1;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.tb-btn:hover { background: var(--color-border); border-color: var(--color-border); }
+.tb-btn.active { background: var(--color-accent); color: #fff; }
+
+/* ── Editor body ── */
 .editor-body {
   min-height: 400px;
   padding: 1rem;
   border: 1px solid var(--color-border);
-  border-radius: 4px;
+  border-radius: 0 0 6px 6px;
   background-color: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-serif);
   line-height: 1.8;
   outline: none;
 }
-
-.editor-body:focus {
-  border-color: var(--color-primary);
-}
-
-.editor-body[contenteditable]:empty:before {
-  content: attr(placeholder);
+.editor-body:focus { border-color: var(--color-primary); }
+.editor-body:empty:before {
+  content: attr(data-placeholder);
   color: var(--color-secondary);
   pointer-events: none;
+}
+.editor-body h1,.editor-body h2,.editor-body h3 { font-family: var(--font-serif); margin: 1rem 0 0.5rem; }
+.editor-body blockquote { border-left: 3px solid var(--color-accent); margin-left:0; padding-left:1rem; color:var(--color-secondary); }
+.editor-body pre { background: var(--color-border); border-radius:4px; padding:0.75rem; font-family: monospace; white-space: pre-wrap; }
+.editor-body img { max-width: 100%; border-radius: 4px; margin: 0.5rem 0; }
+
+/* ── Emoji picker ── */
+.emoji-picker {
+  background: var(--color-surface, #1a1a1a);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.5rem;
+  margin-top: 4px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.emoji-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  word-break: break-all;
+}
+
+/* ── Editor modals ── */
+.editor-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.6);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.editor-modal-box {
+  background: var(--color-surface, #1a1a1a);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 1.5rem;
+  width: min(700px, 95vw);
+}
+.editor-modal-box h4 { margin: 0 0 0.5rem; }
+.editor-modal-box textarea {
+  width: 100%;
+  min-height: 140px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  padding: 0.75rem;
+  font-family: monospace;
+  font-size: 0.85rem;
+  resize: vertical;
+  box-sizing: border-box;
+}
+
+/* ── Draw canvas ── */
+.draw-box { width: min(760px, 97vw); }
+.draw-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+#drawCanvas {
+  display: block;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #1a1a1a;
+  cursor: crosshair;
+  max-width: 100%;
+  touch-action: none;
 }
 
 .form-actions {

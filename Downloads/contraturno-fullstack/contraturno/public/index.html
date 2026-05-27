@@ -141,7 +141,97 @@
               </div>
               <div class="form-group">
                 <label for="postBody">Contenido *</label>
-                <div id="postBody" class="editor-body" contenteditable="true" placeholder="Escribe aquí..." required></div>
+
+                <!-- TOOLBAR -->
+                <div class="editor-toolbar" id="editorToolbar">
+                  <!-- Formato -->
+                  <div class="tb-group">
+                    <button type="button" class="tb-btn" data-cmd="bold" title="Negrita"><b>B</b></button>
+                    <button type="button" class="tb-btn" data-cmd="italic" title="Cursiva"><i>I</i></button>
+                    <button type="button" class="tb-btn" data-cmd="underline" title="Subrayado"><u>U</u></button>
+                    <button type="button" class="tb-btn" data-cmd="strikeThrough" title="Tachado"><s>S</s></button>
+                  </div>
+                  <div class="tb-sep"></div>
+                  <!-- Encabezados -->
+                  <div class="tb-group">
+                    <button type="button" class="tb-btn" data-cmd="formatBlock" data-val="h1" title="Título grande">H1</button>
+                    <button type="button" class="tb-btn" data-cmd="formatBlock" data-val="h2" title="Título medio">H2</button>
+                    <button type="button" class="tb-btn" data-cmd="formatBlock" data-val="h3" title="Título pequeño">H3</button>
+                    <button type="button" class="tb-btn" data-cmd="formatBlock" data-val="p" title="Párrafo normal">¶</button>
+                  </div>
+                  <div class="tb-sep"></div>
+                  <!-- Alineación -->
+                  <div class="tb-group">
+                    <button type="button" class="tb-btn" data-cmd="justifyLeft" title="Alinear izquierda">⬅</button>
+                    <button type="button" class="tb-btn" data-cmd="justifyCenter" title="Centrar">↔</button>
+                    <button type="button" class="tb-btn" data-cmd="justifyRight" title="Alinear derecha">➡</button>
+                    <button type="button" class="tb-btn" data-cmd="justifyFull" title="Justificar">☰</button>
+                  </div>
+                  <div class="tb-sep"></div>
+                  <!-- Listas -->
+                  <div class="tb-group">
+                    <button type="button" class="tb-btn" data-cmd="insertUnorderedList" title="Lista con viñetas">• —</button>
+                    <button type="button" class="tb-btn" data-cmd="insertOrderedList" title="Lista numerada">1.</button>
+                    <button type="button" class="tb-btn" data-cmd="formatBlock" data-val="blockquote" title="Cita">❝</button>
+                    <button type="button" class="tb-btn" data-cmd="formatBlock" data-val="pre" title="Código">{ }</button>
+                  </div>
+                  <div class="tb-sep"></div>
+                  <!-- Insertar -->
+                  <div class="tb-group">
+                    <button type="button" class="tb-btn" id="tbLink" title="Insertar enlace">🔗</button>
+                    <button type="button" class="tb-btn" id="tbImage" title="Insertar imagen">🖼</button>
+                    <button type="button" class="tb-btn" id="tbEmoji" title="Insertar emoji">😊</button>
+                    <button type="button" class="tb-btn" id="tbHtml" title="Insertar HTML/CSS">＜/＞</button>
+                    <button type="button" class="tb-btn" id="tbDraw" title="Dibujo a mano alzada">✏️</button>
+                  </div>
+                  <div class="tb-sep"></div>
+                  <!-- Deshacer -->
+                  <div class="tb-group">
+                    <button type="button" class="tb-btn" data-cmd="undo" title="Deshacer">↩</button>
+                    <button type="button" class="tb-btn" data-cmd="redo" title="Rehacer">↪</button>
+                    <button type="button" class="tb-btn" data-cmd="removeFormat" title="Limpiar formato">✕</button>
+                  </div>
+                </div>
+
+                <!-- Emoji picker (oculto) -->
+                <div id="emojiPicker" class="emoji-picker" style="display:none">
+                  <div class="emoji-grid">
+                    😀😁😂🤣😃😄😅😆😉😊😋😎😍😘🥰😗😙😚🙂🤗🤩🤔🤨😐😑😶🙄😏😣😥😮🤐😯😪😫🥱😴😌😛😜😝🤤😒😓😔😕🥺😢😭😤😠😡🤬🤯😳🥵🥶😱😨😰😥😓🤗🤭🤫🤥😶😐😑😬🙄😯😦😧😮😲😴🤤🤮🤧🥴🤠🥸🤡👻💀☠️👽🤖❤️🧡💛💚💙💜🖤🤍🤎💔❣️💕💞💓💗💖💘💝👍👎👌✌️🤞🤟🤘🤙👈👉👆🖕👇☝️✋🤚🖐🖖👋🤙💪🦾🖐️✍️🤝🙌👏🤲🙏✌️
+                  </div>
+                </div>
+
+                <!-- HTML/CSS modal (oculto) -->
+                <div id="htmlModal" class="editor-modal" style="display:none">
+                  <div class="editor-modal-box">
+                    <h4>Insertar HTML o CSS embebido</h4>
+                    <p class="help-text">Pegá HTML directo. El CSS va dentro de &lt;style&gt;...&lt;/style&gt;</p>
+                    <textarea id="htmlInput" rows="8" placeholder="<p style='color:red'>Texto</p>&#10;<style>.mi-clase { font-size:1.2rem; }</style>"></textarea>
+                    <div class="form-actions">
+                      <button type="button" id="htmlInsert" class="btn btn-primary">Insertar</button>
+                      <button type="button" id="htmlCancel" class="btn btn-secondary">Cancelar</button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Canvas de dibujo (oculto) -->
+                <div id="drawModal" class="editor-modal" style="display:none">
+                  <div class="editor-modal-box draw-box">
+                    <h4>Dibujo a mano alzada</h4>
+                    <div class="draw-controls">
+                      <input type="color" id="drawColor" value="#ffffff" title="Color">
+                      <input type="range" id="drawSize" min="1" max="20" value="3" title="Grosor">
+                      <button type="button" id="drawClear" class="btn btn-secondary">Limpiar</button>
+                      <button type="button" id="drawInsert" class="btn btn-primary">Insertar imagen</button>
+                      <button type="button" id="drawCancel" class="btn btn-secondary">Cancelar</button>
+                    </div>
+                    <canvas id="drawCanvas" width="700" height="400"></canvas>
+                  </div>
+                </div>
+
+                <!-- Input oculto para subir imagen -->
+                <input type="file" id="imageUpload" accept="image/*" style="display:none">
+
+                <div id="postBody" class="editor-body" contenteditable="true" data-placeholder="Escribe aquí..."></div>
               </div>
               <div class="form-actions">
                 <button type="button" id="saveDraft" class="btn btn-secondary">Guardar borrador</button>
