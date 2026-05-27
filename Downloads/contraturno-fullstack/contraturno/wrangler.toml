@@ -5,7 +5,7 @@ pages_build_output_dir = "public"
 [[d1_databases]]
 binding = "DB"
 database_name = "contraturno-db"
-database_id = "REPLACE_WITH_D1_ID"
+database_id = "eaa0fd1a-41e2-4aa5-85b-b4317fe20f0c"
 
 [vars]
 APP_NAME = "Contraturno"
