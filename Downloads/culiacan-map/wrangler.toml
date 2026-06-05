@@ -1,0 +1,8 @@
+name = "global-violentmonitor"
+compatibility_date = "2024-11-01"
+pages_build_output_dir = "public"
+
+[[kv_namespaces]]
+binding = "EVENTS_KV"
+id = "7a079a077122470185fc391c1503b79d"
+preview_id = "ab3a5ea712fc4d51be121bd18289f519"

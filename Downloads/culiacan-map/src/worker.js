@@ -3,7 +3,7 @@
 export default {
   async scheduled(event, env, ctx) {
     ctx.waitUntil(
-      fetch('https://culiacan-violentmonitor.pages.dev/api/refresh', { method: 'POST' })
+      fetch('https://global-violentmonitor.pages.dev/api/refresh', { method: 'POST' })
         .then(r => console.log('Cron trigger:', r.status))
         .catch(e => console.error('Cron error:', e.message))
     );
