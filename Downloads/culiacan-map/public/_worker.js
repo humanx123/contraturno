@@ -324,6 +324,10 @@ function generateDemoEvents() {
 
   const types = ['balacera', 'homicidio', 'enfrentamiento', 'hallazgo', 'robo'];
 
+  // Marcador de día (UTC-7) para que cada tanda de relleno sea única y no
+  // se deduplique contra eventos de días anteriores
+  const dayTag = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+
   // Generar 2-3 eventos nuevos con timestamps recientes
   const events = [];
   for (let i = 0; i < 2; i++) {
@@ -337,6 +341,7 @@ function generateDemoEvents() {
       title,
       type,
       location,
+      dedupeKey: `${title} ${dayTag} #${i}`,   // único por día, no se muestra
       nominatimQuery: `${location}, Culiacán, Sinaloa`,
       summary: `Incidente de tipo ${type} ocurrido en ${location}. Autoridades en el lugar.`,
       source: 'Monitor Local',
@@ -386,8 +391,8 @@ async function readEvents(kv) {
 }
 
 async function writeEvents(kv, events) {
-  // Ordenar por timestamp desc, retener máximo MAX_EVENTS, expirar > 7 días
-  const cutoff = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  // Ordenar por timestamp desc, retener máximo MAX_EVENTS, expirar > 2 días
+  const cutoff = Date.now() - 2 * 24 * 60 * 60 * 1000;
   const clean = events
     .filter(e => new Date(e.timestamp).getTime() > cutoff)
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
@@ -397,10 +402,12 @@ async function writeEvents(kv, events) {
 }
 
 async function saveEvent(kv, ev) {
-  const id = await hash(ev.title + (ev.location||''));
+  // dedupeKey permite forzar unicidad sin ensuciar el título mostrado
+  const id = await hash((ev.dedupeKey || ev.title) + (ev.location||''));
   const events = await readEvents(kv);
   if (events.some(e => e.id === id)) return false;
-  events.push({ id, ...ev });
+  const { dedupeKey, ...clean } = ev;
+  events.push({ id, ...clean });
   await writeEvents(kv, events);
   return true;
 }
@@ -511,7 +518,14 @@ async function runPipeline(env) {
     console.log(`[RSS] Fallo: ${e.message}`);
   }
 
-  // RUTA D: Demo events (siempre genera eventos plausibles)
+  // RUTA D: Demo events (relleno — máximo una tanda cada 12 h, no cada minuto)
+  const DEMO_INTERVAL = 12 * 60 * 60 * 1000;
+  const lastDemo = Number(await env.EVENTS_KV.get('demo_last')) || 0;
+  if (Date.now() - lastDemo < DEMO_INTERVAL) {
+    console.log('[Demo] Omitido — última tanda hace <12h');
+    console.log('[Pipeline] Completado - eventos disponibles en KV');
+    return;
+  }
   console.log('[Pipeline] Generando eventos demo...');
   try {
     const demoEvents = generateDemoEvents();
@@ -525,6 +539,7 @@ async function runPipeline(env) {
         ...coords,
         summary: ev.summary||'',
         title: ev.title,
+        dedupeKey: ev.dedupeKey,
         url: ev.url||'',
         source: ev.source||'Demo',
         color: TYPE_COLOR[ev.type]||TYPE_COLOR.otro,
@@ -533,6 +548,7 @@ async function runPipeline(env) {
       });
       if (ok) saved++;
     }
+    await env.EVENTS_KV.put('demo_last', String(Date.now()));
     if (saved > 0) {
       console.log(`[Demo] ${saved} nuevos eventos guardados`);
       return;
@@ -544,10 +560,21 @@ async function runPipeline(env) {
   console.log('[Pipeline] Completado - eventos disponibles en KV');
 }
 
+// ── ¿El evento es de HOY? (zona horaria Culiacán, UTC-7 sin DST) ──────────────
+function isToday(ts) {
+  const OFF = -7 * 60 * 60 * 1000;            // Mazatlán/Sinaloa = UTC-7
+  const now = new Date(Date.now() + OFF);
+  const ev  = new Date(new Date(ts).getTime() + OFF);
+  return now.getUTCFullYear() === ev.getUTCFullYear()
+      && now.getUTCMonth()    === ev.getUTCMonth()
+      && now.getUTCDate()     === ev.getUTCDate();
+}
+
 // ── API: GET /api/events ──────────────────────────────────────────────────────
 async function getEvents(env) {
   const events = await readEvents(env.EVENTS_KV);
-  return new Response(JSON.stringify(events), {
+  const today  = events.filter(e => isToday(e.timestamp));
+  return new Response(JSON.stringify(today), {
     headers:{ 'Content-Type':'application/json','Access-Control-Allow-Origin':'*' },
   });
 }
@@ -606,7 +633,9 @@ export default {
           },
           groqKeys: keys.length,
           model: MODEL_SRCH,
-          refreshInterval: '1 minuto (cron)',
+          refreshInterval: '1 minuto (cron) — escaneo real de fuentes',
+          demoFallback: 'máximo cada 12 h',
+          display: 'solo eventos del día (UTC-7)',
           frontendUpdate: '30 segundos',
         }), { headers:{'Content-Type':'application/json'} });
       }
