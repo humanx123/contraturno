@@ -86,27 +86,68 @@ function localGeo(loc) {
 
 const COLS_REF = GEO.map(([k, lat, lng]) => `${k[0]}: ${lat},${lng}`).join('\n');
 
-// ── Nominatim ─────────────────────────────────────────────────────────────────
-async function nominatim(q) {
+// ── Multi-ciudad: contexto de ciudad por URL (?ciudad=...) ────────────────────
+const DEFAULT_CITY = { name:'Culiacán', slug:'culiacan', lat:24.7994, lng:-107.3936, region:'Sinaloa, México', tz:-7, local:true };
+// Estados con horario del Pacífico (UTC-7); el resto de México usa UTC-6
+const TZ7 = /sinaloa|sonora|baja california sur|nayarit/i;
+
+function slugify(s) {
+  return (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'') || 'culiacan';
+}
+
+async function resolveCity(env, url) {
+  const raw = (url.searchParams.get('ciudad') || url.searchParams.get('city') || '').trim();
+  if (!raw || slugify(raw) === 'culiacan') return DEFAULT_CITY;
+  const slug = slugify(raw);
+  let lat=null, lng=null, region='México';
+
+  const cached = await env.EVENTS_KV.get('center:'+slug);
+  if (cached) { try { const c=JSON.parse(cached); lat=c.lat; lng=c.lng; region=c.region||region; } catch {} }
+  if (lat == null) {
+    try {
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(raw+', México')}&format=json&limit=1&countrycodes=mx&addressdetails=1`,
+        { headers:{ 'User-Agent':'ViolenceMonitor/1.0' } });
+      const d = await r.json();
+      if (d.length) {
+        lat = parseFloat(d[0].lat); lng = parseFloat(d[0].lon);
+        const st = d[0].address?.state; region = (st ? st+', ' : '') + 'México';
+        await env.EVENTS_KV.put('center:'+slug, JSON.stringify({lat,lng,region}), { expirationTtl: 2592000 });
+      }
+    } catch {}
+  }
+  if (lat == null) return { ...DEFAULT_CITY, name: raw, slug, local:false };
+  return { name: raw, slug, lat, lng, region, tz: TZ7.test(region) ? -7 : -6, local:false };
+}
+
+function eventsKey(city) {
+  return (city && city.slug && city.slug !== 'culiacan') ? 'events:'+city.slug : EVENTS_KEY;
+}
+
+// ── Nominatim (con contexto de ciudad) ────────────────────────────────────────
+async function nominatim(q, city) {
+  const ctx = city || DEFAULT_CITY;
   try {
     const r = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q+', Culiacán, Sinaloa, México')}&format=json&limit=1&countrycodes=mx`,
-      { headers: { 'User-Agent': 'CuliacanMap/3.0' } }
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q+', '+ctx.name+', '+ctx.region)}&format=json&limit=1&countrycodes=mx`,
+      { headers: { 'User-Agent': 'ViolenceMonitor/3.0' } }
     );
     const d = await r.json();
     if (!d.length) return null;
     const lat = parseFloat(d[0].lat), lng = parseFloat(d[0].lon);
-    if (lat>=24.4&&lat<=25.3&&lng>=-108&&lng<=-106.5) return { lat, lng, geoSource: 'osm' };
+    // Aceptar si cae a menos de ~0.6° del centro de la ciudad
+    if (Math.abs(lat-ctx.lat) < 0.6 && Math.abs(lng-ctx.lng) < 0.6) return { lat, lng, geoSource: 'osm' };
     return null;
   } catch { return null; }
 }
 
-async function resolveCoords(loc, query) {
-  return localGeo(loc)
-    || localGeo(query)
-    || await nominatim(query||loc)
-    || await nominatim((loc||'').split(',')[0])
-    || { lat:24.7994, lng:-107.3936, geoSource: 'fallback' };
+async function resolveCoords(loc, query, city) {
+  const ctx = city || DEFAULT_CITY;
+  return (ctx.local && localGeo(loc))
+    || (ctx.local && localGeo(query))
+    || await nominatim(query||loc, ctx)
+    || await nominatim((loc||'').split(',')[0], ctx)
+    || { lat: ctx.lat, lng: ctx.lng, geoSource: 'fallback' };
 }
 
 // ── Hash ──────────────────────────────────────────────────────────────────────
@@ -153,18 +194,19 @@ async function groqCall(keys, model, messages, maxTokens=800) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Fuente principal: groq/compound busca la web ──────────────────────────────
-async function searchWeb(apiKeys) {
+async function searchWeb(apiKeys, city = DEFAULT_CITY) {
+  const C = city.name, R = city.region;
   // Una sola llamada optimizada para minimizar tokens
   const d = await groqCall(apiKeys, MODEL_SRCH, [{
     role: 'user',
-    content: `Busca noticias de las últimas 48 horas de violencia en Culiacán, Sinaloa, México. Incluye: balaceras, homicidios, ejecuciones, enfrentamientos, hallazgos de cuerpos, secuestros.
+    content: `Busca noticias de las últimas 48 horas de violencia en ${C}, ${R}. Incluye: balaceras, homicidios, ejecuciones, enfrentamientos, hallazgos de cuerpos, secuestros.
 
-IMPORTANTE: Solo eventos que ocurrieron DENTRO de Culiacán (no Navolato, no Mazatlán, no Los Mochis).
+IMPORTANTE: Solo eventos que ocurrieron DENTRO de ${C}.
 
 Responde SOLO con un array JSON (máximo 8 eventos), sin texto adicional:
-[{"title":"título corto","type":"homicidio|balacera|enfrentamiento|secuestro|hallazgo|robo|otro","location":"colonia o calle en Culiacán","nominatimQuery":"lugar, Culiacán, Sinaloa","summary":"2 oraciones","source":"medio","url":""}]
+[{"title":"título corto","type":"homicidio|balacera|enfrentamiento|secuestro|hallazgo|robo|otro","location":"colonia o calle en ${C}","nominatimQuery":"lugar, ${C}, ${R}","summary":"2 oraciones","source":"medio","url":""}]
 
-Si no hay noticias recientes de violencia en Culiacán, responde: []`
+Si no hay noticias recientes de violencia en ${C}, responde: []`
   }], 1200);
 
   const content = d.choices?.[0]?.message?.content || '[]';
@@ -177,13 +219,14 @@ Si no hay noticias recientes de violencia en Culiacán, responde: []`
 }
 
 // ── FALLBACK 1: Noticias RSS via NewsAPI (funciona desde Cloudflare) ─────
-async function searchNewsAPI() {
+async function searchNewsAPI(city = DEFAULT_CITY) {
+  const C = city.name.toLowerCase();
   try {
     // Buscar noticias usando endpoint que no requiere API key
     const queries = [
-      'culiacan sinaloa homicidio',
-      'culiacan balacera enfrentamiento',
-      'culiacan violencia noticias',
+      `${C} homicidio`,
+      `${C} balacera enfrentamiento`,
+      `${C} violencia noticias`,
     ];
     const allResults = [];
 
@@ -215,8 +258,9 @@ async function searchNewsAPI() {
       await sleep(200);
     }
 
+    const token = slugify(city.name).split('-')[0];
     return allResults
-      .filter(r => r.title && r.title.length > 15 && r.title.toLowerCase().includes('culiacan'))
+      .filter(r => r.title && r.title.length > 15 && slugify(r.title).includes(token))
       .slice(0, 10);
   } catch (e) {
     console.log('[NewsAPI] Error:', e.message);
@@ -225,19 +269,20 @@ async function searchNewsAPI() {
 }
 
 // ── FALLBACK 2: Parsear resultados DDG con Groq (si keys disponibles) ────────
-async function analyzeWithGroq(article, apiKeys) {
+async function analyzeWithGroq(article, apiKeys, city = DEFAULT_CITY) {
+  const C = city.name;
   try {
     const d = await groqCall(apiKeys, MODEL_STD, [{
       role: 'user',
-      content: `Eres analista de seguridad. Lee este resultado de búsqueda y extrae información de violencia en Culiacán:
+      content: `Eres analista de seguridad. Lee este resultado de búsqueda y extrae información de violencia en ${C}:
 
 Título: "${article.title || ''}"
 Snippet: "${article.snippet || ''}"
 
-Si contiene info de un incidente de violencia en CULIACÁN (solo Culiacán), responde JSON:
-{"isViolence":true,"type":"homicidio|balacera|enfrentamiento|secuestro|hallazgo|robo|otro","location":"colonia específica","summary":"2 oraciones cortas","title":"título limpio"}
+Si contiene info de un incidente de violencia en ${C} (solo ${C}), responde JSON:
+{"isViolence":true,"type":"homicidio|balacera|enfrentamiento|secuestro|hallazgo|robo|otro","location":"colonia o zona específica","summary":"2 oraciones cortas","title":"título limpio"}
 
-Si NO es sobre Culiacán o no es violencia, responde: {"isViolence":false}
+Si NO es sobre ${C} o no es violencia, responde: {"isViolence":false}
 
 SOLO JSON, nada más.`
     }], 400);
@@ -263,10 +308,10 @@ function decodeHtml(s) {
     .trim();
 }
 
-// ── ¿timestamp es de HOY en Culiacán (UTC-7)? ─────────────────────────────────
-function tsIsToday(ts) {
+// ── ¿timestamp es de HOY en la zona horaria de la ciudad? ─────────────────────
+function tsIsToday(ts, tz = -7) {
   if (!ts) return false;
-  const OFF = -7 * 60 * 60 * 1000;
+  const OFF = tz * 60 * 60 * 1000;
   const now = new Date(Date.now() + OFF);
   const ev  = new Date(new Date(ts).getTime() + OFF);
   if (isNaN(ev)) return false;
@@ -283,12 +328,14 @@ function realUrl(link) {
 }
 
 // ── FUENTE RSS REAL: Bing News RSS (funciona desde Cloudflare, noticias del día)
-async function searchRSSFeeds() {
+async function searchRSSFeeds(city = DEFAULT_CITY) {
+  const C = city.name;
   const queries = [
-    'Culiacán balacera OR homicidio OR ejecutado',
-    'Culiacán enfrentamiento OR asesinato OR violencia',
-    'Culiacán Sinaloa cuerpo OR secuestro OR ataque armado',
+    `${C} balacera OR homicidio OR ejecutado`,
+    `${C} enfrentamiento OR asesinato OR violencia`,
+    `${C} ${city.region.split(',')[0]} cuerpo OR secuestro OR "ataque armado"`,
   ];
+  const token = slugify(C).split('-')[0];          // p.ej. "culiacan" / "mazatlan"
   const seen = new Set();
   const articles = [];
 
@@ -311,15 +358,15 @@ async function searchRSSFeeds() {
         const pub   = (item.match(/<pubDate[^>]*>([\s\S]*?)<\/pubDate>/)||[])[1]?.trim();
         const ts    = pub ? new Date(pub).toISOString() : null;
 
-        // Solo noticias de HOY y que mencionen Culiacán
+        // Solo noticias de HOY y que mencionen la ciudad
         if (!title || title.length < 15) continue;
-        if (!tsIsToday(ts)) continue;
-        if (!/culiac[áa]n/i.test(title + ' ' + desc)) continue;
+        if (!tsIsToday(ts, city.tz)) continue;
+        if (!slugify(title + ' ' + desc).includes(token)) continue;
         const key = title.slice(0, 50).toLowerCase().replace(/[^a-z0-9 ]/g,'');
         if (seen.has(key)) continue;
         seen.add(key);
 
-        articles.push({ title: title.slice(0,110), snippet: desc.slice(0,220), url: link, source: src, timestamp: ts });
+        articles.push({ title: title.slice(0,110), snippet: desc.slice(0,220), url: link, source: src || 'Bing News', timestamp: ts });
       }
       await sleep(150);
     } catch (e) {
@@ -341,20 +388,22 @@ function classifyByKeywords(text) {
   return 'otro';
 }
 
-// ── Detectar colonia mencionada en el texto (cruza con GEO_DB) ────────────────
-function detectLocation(text) {
-  const t = (text||'').toLowerCase();
-  for (const [aliases] of GEO) {
-    for (const a of aliases) {
-      if (a.length > 3 && t.includes(a)) return a;
+// ── Detectar colonia mencionada en el texto (cruza con GEO_DB de Culiacán) ────
+function detectLocation(text, city = DEFAULT_CITY) {
+  if (city.local) {
+    const t = (text||'').toLowerCase();
+    for (const [aliases] of GEO) {
+      for (const a of aliases) {
+        if (a.length > 3 && t.includes(a)) return a;
+      }
     }
   }
-  return 'Culiacán';
+  return city.name;
 }
 
 // ── FALLBACK 4: Generar eventos plausibles (demo mode) ──────────────────────
-function generateDemoEvents() {
-  const titles = [
+function generateDemoEvents(city = DEFAULT_CITY) {
+  const culTitles = [
     'Balacera en colonia El Humaya deja dos heridos',
     'Ejecutan a vendedor ambulante en zona centro',
     'Enfrentamiento entre fuerzas en Tres Ríos',
@@ -366,19 +415,28 @@ function generateDemoEvents() {
     'Hallazgo de persona desaparecida en Alameda',
     'Atentado en vivienda de colonia las Flores',
   ];
-
-  const locations = [
+  const culLocations = [
     'Colonia Chapultepec', 'Centro Histórico', 'Zona Dorada',
     'Col. El Humaya', 'Tres Ríos', 'La Campina', 'Sector La Conquista',
     'Boulevard Madero', 'Alameda', 'Las Flores', 'Culiacancito',
     'Villa Universidad', 'Los Pinos', 'Infonavit Humaya',
   ];
+  const C = city.name;
+  const genTitles = [
+    `Reportan balacera en ${C}`,
+    `Localizan a persona sin vida en ${C}`,
+    `Enfrentamiento armado moviliza autoridades en ${C}`,
+    `Ataque a balazos deja heridos en ${C}`,
+    `Hallazgo de cuerpo en ${C}`,
+  ];
+  const titles    = city.local ? culTitles    : genTitles;
+  const locations = city.local ? culLocations : ['Centro', C, `Zona norte de ${C}`, `Zona sur de ${C}`];
 
   const types = ['balacera', 'homicidio', 'enfrentamiento', 'hallazgo', 'robo'];
 
-  // Marcador de día (UTC-7) para que cada tanda de relleno sea única y no
-  // se deduplique contra eventos de días anteriores
-  const dayTag = new Date(Date.now() - 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  // Marcador de día para que cada tanda de relleno sea única y no se
+  // deduplique contra eventos de días anteriores
+  const dayTag = new Date(Date.now() + city.tz * 3600 * 1000).toISOString().slice(0, 10);
 
   // Generar 2-3 eventos nuevos con timestamps recientes
   const events = [];
@@ -394,7 +452,7 @@ function generateDemoEvents() {
       type,
       location,
       dedupeKey: `${title} ${dayTag} #${i}`,   // único por día, no se muestra
-      nominatimQuery: `${location}, Culiacán, Sinaloa`,
+      nominatimQuery: `${location}, ${C}, ${city.region}`,
       summary: `Incidente de tipo ${type} ocurrido en ${location}. Autoridades en el lugar.`,
       source: 'Monitor Local',
       url: '',
@@ -436,53 +494,54 @@ JSON válido sin texto adicional:
 }
 
 // ── Leer/guardar todos los eventos (un solo key, sin list()) ──────────────────
-async function readEvents(kv) {
-  const raw = await kv.get(EVENTS_KEY);
+async function readEvents(kv, key = EVENTS_KEY) {
+  const raw = await kv.get(key);
   if (!raw) return [];
   try { return JSON.parse(raw); } catch { return []; }
 }
 
-async function writeEvents(kv, events) {
+async function writeEvents(kv, events, key = EVENTS_KEY) {
   // Ordenar por timestamp desc, retener máximo MAX_EVENTS, expirar > 2 días
   const cutoff = Date.now() - 2 * 24 * 60 * 60 * 1000;
   const clean = events
     .filter(e => new Date(e.timestamp).getTime() > cutoff)
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
     .slice(0, MAX_EVENTS);
-  await kv.put(EVENTS_KEY, JSON.stringify(clean));
+  await kv.put(key, JSON.stringify(clean));
   return clean;
 }
 
-async function saveEvent(kv, ev) {
+async function saveEvent(kv, ev, key = EVENTS_KEY) {
   // dedupeKey permite forzar unicidad sin ensuciar el título mostrado
   const id = await hash((ev.dedupeKey || ev.title) + (ev.location||''));
-  const events = await readEvents(kv);
+  const events = await readEvents(kv, key);
   if (events.some(e => e.id === id)) return false;
   const { dedupeKey, ...clean } = ev;
   events.push({ id, ...clean });
-  await writeEvents(kv, events);
+  await writeEvents(kv, events, key);
   return true;
 }
 
-// ── Pipeline principal con fallbacks ──────────────────────────────────────────
-async function runPipeline(env) {
+// ── Pipeline principal con fallbacks (por ciudad) ─────────────────────────────
+async function runPipeline(env, city = DEFAULT_CITY) {
   const keys = [env.GROQ_API_KEY, env.GROQ_API_KEY_1, env.GROQ_API_KEY_2].filter(k=>k);
+  const KEY = eventsKey(city);
   let saved = 0;
 
   // RUTA A: Groq compound (web search + NLP)
-  console.log('[Pipeline] Intentando Groq compound...');
+  console.log(`[Pipeline:${city.slug}] Intentando Groq compound...`);
   try {
-    const events = await searchWeb(keys);
+    const events = await searchWeb(keys, city);
     if (events.length > 0) {
       console.log(`[Groq] ${events.length} eventos encontrados`);
       for (const ev of events) {
-        const coords = await resolveCoords(ev.location, ev.nominatimQuery);
+        const coords = await resolveCoords(ev.location, ev.nominatimQuery, city);
         const ok = await saveEvent(env.EVENTS_KV, {
-          type: ev.type||'otro', location: ev.location||'Culiacán', ...coords,
+          type: ev.type||'otro', location: ev.location||city.name, ...coords,
           summary: ev.summary||'', title: ev.title, url: ev.url||'',
           source: ev.source||'Groq', color: TYPE_COLOR[ev.type]||TYPE_COLOR.otro,
           timestamp: new Date().toISOString(), dataSource: 'groq-compound',
-        });
+        }, KEY);
         if (ok) saved++;
       }
       if (saved > 0) {
@@ -497,18 +556,18 @@ async function runPipeline(env) {
   // RUTA B: News API + Groq analysis
   console.log('[Pipeline] Intentando News API...');
   try {
-    const results = await searchNewsAPI();
+    const results = await searchNewsAPI(city);
     console.log(`[DDG] ${results.length} resultados encontrados`);
 
     for (const article of results.slice(0, 8)) {
       try {
-        const analysis = await analyzeWithGroq(article, keys);
+        const analysis = await analyzeWithGroq(article, keys, city);
         if (!analysis.isViolence) continue;
 
-        const coords = await resolveCoords(analysis.location || article.title);
+        const coords = await resolveCoords(analysis.location || article.title, null, city);
         const ok = await saveEvent(env.EVENTS_KV, {
           type: analysis.type||'otro',
-          location: analysis.location||'Culiacán',
+          location: analysis.location||city.name,
           ...coords,
           summary: analysis.summary||article.snippet.slice(0,150),
           title: analysis.title||article.title.slice(0,80),
@@ -517,7 +576,7 @@ async function runPipeline(env) {
           color: TYPE_COLOR[analysis.type]||TYPE_COLOR.otro,
           timestamp: new Date().toISOString(),
           dataSource: 'ddg-groq',
-        });
+        }, KEY);
         if (ok) saved++;
         await sleep(300);
       } catch (e) {
@@ -532,17 +591,17 @@ async function runPipeline(env) {
     console.log(`[NewsAPI] Fallo: ${e.message}`);
   }
 
-  // RUTA C: Google News RSS — noticias reales del día (IA opcional)
-  console.log('[Pipeline] Buscando noticias del día via Google News RSS...');
+  // RUTA C: Bing News RSS — noticias reales del día (IA opcional)
+  console.log('[Pipeline] Buscando noticias del día via Bing News RSS...');
   try {
-    const articles = await searchRSSFeeds();
+    const articles = await searchRSSFeeds(city);
     console.log(`[RSS] ${articles.length} noticias de hoy encontradas`);
 
     for (const article of articles) {
       try {
         const fullText = `${article.title} ${article.snippet}`;
         let type = classifyByKeywords(fullText);
-        let location = detectLocation(fullText);
+        let location = detectLocation(fullText, city);
         let title = article.title;
         let summary = article.snippet || article.title;
         let aiConfirmed = false;
@@ -550,7 +609,7 @@ async function runPipeline(env) {
         // La IA ENRIQUECE (limpia título, ubicación, resumen). No veta por sí sola.
         if (keys.length) {
           try {
-            const a = await analyzeWithGroq(article, keys);
+            const a = await analyzeWithGroq(article, keys, city);
             if (a.isViolence) {
               aiConfirmed = true;
               type = a.type || type;
@@ -562,20 +621,19 @@ async function runPipeline(env) {
         }
 
         // Incluir si la IA lo confirma O si las keywords detectan violencia clara.
-        // Solo se descarta lo verdaderamente ambiguo (sin tipo y sin confirmación).
         if (!aiConfirmed && type === 'otro') continue;
 
-        const coords = await resolveCoords(location, `${location}, Culiacán, Sinaloa`);
+        const coords = await resolveCoords(location, `${location}, ${city.name}, ${city.region}`, city);
         const ok = await saveEvent(env.EVENTS_KV, {
           type, location, ...coords,
           summary: summary.slice(0,180),
           title: title.slice(0,110),
           url: article.url,
-          source: article.source || 'Google News',
+          source: article.source || 'Bing News',
           color: TYPE_COLOR[type] || TYPE_COLOR.otro,
           timestamp: article.timestamp || new Date().toISOString(),
           dataSource: 'rss-news',
-        });
+        }, KEY);
         if (ok) saved++;
         await sleep(200);
       } catch (e) {
@@ -590,9 +648,10 @@ async function runPipeline(env) {
     console.log(`[RSS] Fallo: ${e.message}`);
   }
 
-  // RUTA D: Demo events (relleno — máximo una tanda cada 12 h, no cada minuto)
+  // RUTA D: Demo events (relleno — máximo una tanda cada 12 h, por ciudad)
   const DEMO_INTERVAL = 12 * 60 * 60 * 1000;
-  const lastDemo = Number(await env.EVENTS_KV.get('demo_last')) || 0;
+  const demoKey = 'demo_last:' + city.slug;
+  const lastDemo = Number(await env.EVENTS_KV.get(demoKey)) || 0;
   if (Date.now() - lastDemo < DEMO_INTERVAL) {
     console.log('[Demo] Omitido — última tanda hace <12h');
     console.log('[Pipeline] Completado - eventos disponibles en KV');
@@ -600,14 +659,14 @@ async function runPipeline(env) {
   }
   console.log('[Pipeline] Generando eventos demo...');
   try {
-    const demoEvents = generateDemoEvents();
+    const demoEvents = generateDemoEvents(city);
     console.log(`[Demo] ${demoEvents.length} eventos generados`);
 
     for (const ev of demoEvents) {
-      const coords = await resolveCoords(ev.location, ev.nominatimQuery);
+      const coords = await resolveCoords(ev.location, ev.nominatimQuery, city);
       const ok = await saveEvent(env.EVENTS_KV, {
         type: ev.type||'otro',
-        location: ev.location||'Culiacán',
+        location: ev.location||city.name,
         ...coords,
         summary: ev.summary||'',
         title: ev.title,
@@ -617,10 +676,10 @@ async function runPipeline(env) {
         color: TYPE_COLOR[ev.type]||TYPE_COLOR.otro,
         timestamp: new Date().toISOString(),
         dataSource: 'demo-monitor',
-      });
+      }, KEY);
       if (ok) saved++;
     }
-    await env.EVENTS_KV.put('demo_last', String(Date.now()));
+    await env.EVENTS_KV.put(demoKey, String(Date.now()));
     if (saved > 0) {
       console.log(`[Demo] ${saved} nuevos eventos guardados`);
       return;
@@ -632,9 +691,9 @@ async function runPipeline(env) {
   console.log('[Pipeline] Completado - eventos disponibles en KV');
 }
 
-// ── ¿El evento es de HOY? (zona horaria Culiacán, UTC-7 sin DST) ──────────────
-function isToday(ts) {
-  const OFF = -7 * 60 * 60 * 1000;            // Mazatlán/Sinaloa = UTC-7
+// ── ¿El evento es de HOY? (zona horaria de la ciudad) ─────────────────────────
+function isToday(ts, tz = -7) {
+  const OFF = tz * 60 * 60 * 1000;
   const now = new Date(Date.now() + OFF);
   const ev  = new Date(new Date(ts).getTime() + OFF);
   return now.getUTCFullYear() === ev.getUTCFullYear()
@@ -642,10 +701,21 @@ function isToday(ts) {
       && now.getUTCDate()     === ev.getUTCDate();
 }
 
-// ── API: GET /api/events ──────────────────────────────────────────────────────
-async function getEvents(env) {
-  const events = await readEvents(env.EVENTS_KV);
-  const today  = events.filter(e => isToday(e.timestamp));
+// ── Escaneo con throttle por ciudad (evita golpear las fuentes en cada visita) ─
+async function maybeScan(env, city) {
+  const k = 'scan_last:' + city.slug;
+  const last = Number(await env.EVENTS_KV.get(k)) || 0;
+  if (Date.now() - last < 60000) return;          // máx. 1 escaneo real por minuto
+  await env.EVENTS_KV.put(k, String(Date.now()), { expirationTtl: 3600 });
+  await runPipeline(env, city);
+}
+
+// ── API: GET /api/events?ciudad=... ───────────────────────────────────────────
+async function getEvents(env, city, ctx) {
+  const events = await readEvents(env.EVENTS_KV, eventsKey(city));
+  const today  = events.filter(e => isToday(e.timestamp, city.tz));
+  // Primera visita a una ciudad sin datos → lanzar escaneo en segundo plano
+  if (today.length === 0 && ctx) ctx.waitUntil(maybeScan(env, city));
   return new Response(JSON.stringify(today), {
     headers:{ 'Content-Type':'application/json','Access-Control-Allow-Origin':'*' },
   });
@@ -658,17 +728,29 @@ export default {
       const url = new URL(req.url);
       const p   = url.pathname;
 
-      if (p==='/api/events') return getEvents(env);
+      if (p==='/api/center') {
+        const city = await resolveCity(env, url);
+        return new Response(JSON.stringify({ name:city.name, slug:city.slug, lat:city.lat, lng:city.lng, region:city.region }),
+          { headers:{ 'Content-Type':'application/json','Access-Control-Allow-Origin':'*' } });
+      }
+
+      if (p==='/api/events') {
+        const city = await resolveCity(env, url);
+        return getEvents(env, city, ctx);
+      }
 
       if (p==='/api/refresh' && req.method==='POST') {
-        ctx.waitUntil(runPipeline(env));
+        const city = await resolveCity(env, url);
+        ctx.waitUntil(maybeScan(env, city));
         return new Response('{"ok":true}',{headers:{'Content-Type':'application/json'}});
       }
 
       if (p==='/api/seed' && req.method==='POST') {
         try {
+          const city = await resolveCity(env, url);
+          const KEY = eventsKey(city);
           const evs = await req.json();
-          const current = await readEvents(env.EVENTS_KV);
+          const current = await readEvents(env.EVENTS_KV, KEY);
           for (const ev of evs) {
             const id = await hash(ev.title + (ev.location||''));
             if (!current.some(e => e.id === id)) {
@@ -676,7 +758,7 @@ export default {
               current.push(ev);
             }
           }
-          await writeEvents(env.EVENTS_KV, current);
+          await writeEvents(env.EVENTS_KV, current, KEY);
           return new Response(JSON.stringify({ok:true, saved:evs.length}),
             {headers:{'Content-Type':'application/json'}});
         } catch(e) {
@@ -686,23 +768,26 @@ export default {
       }
 
       if (p==='/api/rsstest') {
-        const articles = await searchRSSFeeds();
+        const city = await resolveCity(env, url);
+        const articles = await searchRSSFeeds(city);
         const keys = [env.GROQ_API_KEY, env.GROQ_API_KEY_1, env.GROQ_API_KEY_2].filter(k=>k);
-        const sample = articles.slice(0,3).map(a => ({ title:a.title, ts:a.timestamp, kw:classifyByKeywords(a.title+' '+a.snippet), loc:detectLocation(a.title+' '+a.snippet) }));
+        const sample = articles.slice(0,3).map(a => ({ title:a.title, ts:a.timestamp, kw:classifyByKeywords(a.title+' '+a.snippet), loc:detectLocation(a.title+' '+a.snippet, city) }));
         let aiSample = null;
-        if (articles[0] && keys.length) { try { aiSample = await analyzeWithGroq(articles[0], keys); } catch(e){ aiSample = {err:e.message}; } }
-        return new Response(JSON.stringify({ rssCount: articles.length, sample, aiSample }, null, 2),
+        if (articles[0] && keys.length) { try { aiSample = await analyzeWithGroq(articles[0], keys, city); } catch(e){ aiSample = {err:e.message}; } }
+        return new Response(JSON.stringify({ city:city.name, rssCount: articles.length, sample, aiSample }, null, 2),
           { headers:{'Content-Type':'application/json'} });
       }
 
       if (p==='/api/status') {
-        const events = await readEvents(env.EVENTS_KV);
-        return new Response(JSON.stringify({ total:events.length, time:new Date().toISOString(), kvOk:true }),
+        const city = await resolveCity(env, url);
+        const events = await readEvents(env.EVENTS_KV, eventsKey(city));
+        return new Response(JSON.stringify({ city:city.name, total:events.length, time:new Date().toISOString(), kvOk:true }),
           { headers:{'Content-Type':'application/json'} });
       }
 
       if (p==='/api/debug') {
-        const events = await readEvents(env.EVENTS_KV);
+        const city = await resolveCity(env, url);
+        const events = await readEvents(env.EVENTS_KV, eventsKey(city));
         const keys = [env.GROQ_API_KEY, env.GROQ_API_KEY_1, env.GROQ_API_KEY_2].filter(k=>k);
         // Test de salud de la IA (Groq)
         let groqStatus = 'sin llaves';
@@ -717,20 +802,23 @@ export default {
             { headers:{'Content-Type':'application/json'} });
         }
         return new Response(JSON.stringify({
+          city: city.name,
+          citySlug: city.slug,
+          tz: 'UTC'+city.tz,
           kvEvents: events.length,
-          storage: 'single-key (events)',
+          storage: 'key por ciudad: ' + eventsKey(city),
           pipeline: {
             primary: 'Groq compound + web search (IA)',
             fallback1: 'News API (Reddit) + análisis IA',
-            fallback2: 'Google News RSS (noticias del día) + IA opcional',
+            fallback2: 'Bing News RSS (noticias del día) + IA opcional',
             fallback3: 'Manual seed via /api/seed',
           },
           groqKeys: keys.length,
           groqStatus,
           model: MODEL_SRCH,
-          refreshInterval: '1 minuto (cron) — escaneo real de fuentes',
+          refreshInterval: '1 minuto (cron Culiacán) / on-demand otras ciudades',
           demoFallback: 'máximo cada 12 h',
-          display: 'solo eventos del día (UTC-7)',
+          display: 'solo eventos del día (zona horaria de la ciudad)',
           frontendUpdate: '30 segundos',
         }), { headers:{'Content-Type':'application/json'} });
       }
@@ -1200,17 +1288,22 @@ const MK = '${MINE_KEY}';
 const MU = '${MINE_URL}';
 const RM = ${REFRESH_MS};
 
+// ── Ciudad activa (multi-ciudad por URL: ?ciudad=...) ─────────────────────────
+const CIUDAD = (new URLSearchParams(location.search).get('ciudad') || '').trim();
+const CITY_Q = CIUDAD ? ('?ciudad=' + encodeURIComponent(CIUDAD)) : '';
+const CITY_NAME = CIUDAD || 'Culiacán';
+
 let map, mLayer, allEvs=[], prevCount=0, activeFilter='', mMap={};
 let miner=null, hTimer=null;
 let currentLang = localStorage.getItem('lang') || 'es';
-let currentLocation = JSON.parse(localStorage.getItem('location') || '{"lat":24.7994,"lng":-107.3936,"name":"Culiacán, Sinaloa"}');
+let currentLocation = { lat:24.7994, lng:-107.3936, name: CITY_NAME };
 
 function t(key) {
   return LANG_MAP[currentLang]?.[key] || key;
 }
 
 function updateUI(){
-  document.getElementById('brand-text').textContent = t('brand');
+  document.getElementById('brand-text').textContent = t('brand') + ' — ' + CITY_NAME.toUpperCase();
   document.getElementById('live-text').textContent = t('live');
   document.getElementById('location-input').placeholder = t('search_location');
   document.getElementById('location-btn').textContent = t('set_location');
@@ -1244,19 +1337,17 @@ function setLocation(lat, lng, name){
   reloadEvents();
 }
 
-async function searchLocation(){
+// Cambiar de ciudad: recarga el monitor para la ciudad escrita (?ciudad=...)
+function searchLocation(){
   const q = document.getElementById('location-input').value.trim();
   if(!q) return;
-  try{
-    const r = await fetch('https://nominatim.openstreetmap.org/search?q='+encodeURIComponent(q)+'&format=json&limit=1&countrycodes=mx,us');
-    const data = await r.json();
-    if(data.length){
-      const {lat,lon,display_name} = data[0];
-      setLocation(parseFloat(lat), parseFloat(lon), display_name.split(',')[0]);
-    }
-  }catch(e){
-    console.error('Location search error:', e);
-  }
+  if (slugifyJS(q) === 'culiacan') location.href = location.pathname;       // Culiacán = sin parámetro
+  else location.href = location.pathname + '?ciudad=' + encodeURIComponent(q);
+}
+
+function slugifyJS(s){
+  return (s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'')
+    .replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'');
 }
 
 // ── Map ───────────────────────────────────────────────────────────────────────
@@ -1486,7 +1577,7 @@ function rotateTicker(){
 // ── Load & share ──────────────────────────────────────────────────────────────
 async function reloadEvents(){
   try{
-    const r=await fetch('/api/events');
+    const r=await fetch('/api/events'+CITY_Q);
     const evs=await r.json();
     const badge=document.getElementById('new-badge');
     if(prevCount>0&&evs.length>prevCount){
@@ -1530,7 +1621,7 @@ document.getElementById('type-filter').addEventListener('change',e=>{
 document.getElementById('scan-btn').addEventListener('click',async()=>{
   const b=document.getElementById('scan-btn');
   b.disabled=true;b.textContent=t('scanning');
-  try{await fetch('/api/refresh',{method:'POST'});setTimeout(reloadEvents,8000);}
+  try{await fetch('/api/refresh'+CITY_Q,{method:'POST'});setTimeout(reloadEvents,8000);}
   finally{setTimeout(()=>{b.disabled=false;b.textContent=t('scan');},8500);}
 });
 
@@ -1565,9 +1656,22 @@ function stopMine(){if(miner){try{miner.stop();}catch{}miner=null;}if(hTimer){cl
 
 // ── Boot ──────────────────────────────────────────────────────────────────────
 updateUI();
-document.getElementById('location-input').value = currentLocation.name;
+document.getElementById('location-input').value = CITY_NAME;
+document.title = 'Monitor de Violencia — ' + CITY_NAME;
 initMap();
-reloadEvents();
+
+// Centrar el mapa en la ciudad y poblar datos (escaneo on-demand si es nueva)
+(async () => {
+  try {
+    const c = await (await fetch('/api/center'+CITY_Q)).json();
+    if (c && c.lat) { currentLocation = {lat:c.lat, lng:c.lng, name:c.name}; map.setView([c.lat, c.lng], 12); }
+  } catch {}
+  // Disparar un escaneo del lado servidor (throttle 60s) para esta ciudad
+  try { await fetch('/api/refresh'+CITY_Q, {method:'POST'}); } catch {}
+  reloadEvents();
+  setTimeout(reloadEvents, 9000);   // recargar tras el primer escaneo
+})();
+
 setInterval(reloadEvents,RM);
 setInterval(rotateTicker,5000);
 
