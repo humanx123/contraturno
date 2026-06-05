@@ -252,52 +252,104 @@ SOLO JSON, nada más.`
   }
 }
 
-// ── FALLBACK 2: XML RSS feeds con parsing simple ──────────────────────────
+// ── Decodificar entidades HTML comunes en títulos RSS ─────────────────────────
+function decodeHtml(s) {
+  return (s||'')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(+n))
+    .replace(/&#x([0-9a-f]+);/gi, (_, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&nbsp;/g, ' ')
+    .trim();
+}
+
+// ── ¿timestamp es de HOY en Culiacán (UTC-7)? ─────────────────────────────────
+function tsIsToday(ts) {
+  if (!ts) return false;
+  const OFF = -7 * 60 * 60 * 1000;
+  const now = new Date(Date.now() + OFF);
+  const ev  = new Date(new Date(ts).getTime() + OFF);
+  if (isNaN(ev)) return false;
+  return now.getUTCFullYear() === ev.getUTCFullYear()
+      && now.getUTCMonth()    === ev.getUTCMonth()
+      && now.getUTCDate()     === ev.getUTCDate();
+}
+
+// Extraer la URL real del artículo desde el redirect de Bing (apiclick.aspx?...url=...)
+function realUrl(link) {
+  const m = (link||'').match(/[?&]url=([^&]+)/);
+  if (m) { try { return decodeURIComponent(m[1]); } catch {} }
+  return link;
+}
+
+// ── FUENTE RSS REAL: Bing News RSS (funciona desde Cloudflare, noticias del día)
 async function searchRSSFeeds() {
-  const feeds = [
-    { url: 'https://feeds.bloomberg.com/markets/news.rss', name: 'Bloomberg' },
-    { url: 'https://feeds.reuters.com/news/world', name: 'Reuters' },
+  const queries = [
+    'Culiacán balacera OR homicidio OR ejecutado',
+    'Culiacán enfrentamiento OR asesinato OR violencia',
+    'Culiacán Sinaloa cuerpo OR secuestro OR ataque armado',
   ];
+  const seen = new Set();
   const articles = [];
 
-  for (const feed of feeds) {
+  for (const q of queries) {
+    const url = `https://www.bing.com/news/search?q=${encodeURIComponent(q)}&format=rss&qft=interval%3d%227%22&setlang=es-MX&cc=MX`;
     try {
-      const r = await fetch(feed.url, {
-        headers: { 'User-Agent': 'Mozilla/5.0' },
-        cf: { cacheTtl: 300, scrapeShield: false },
+      const r = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+        cf: { cacheTtl: 120 },
       });
-      if (!r.ok) continue;
+      if (!r.ok) { console.log(`[RSS] Bing ${r.status}`); continue; }
       const xml = await r.text();
+      const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
 
-      // Extraer items del RSS
-      const itemRegex = /<item>[\s\S]*?<\/item>/g;
-      const items = xml.match(itemRegex) || [];
+      for (const item of items) {
+        const title = decodeHtml((item.match(/<title[^>]*>([\s\S]*?)<\/title>/)||[])[1]);
+        const link  = realUrl(decodeHtml((item.match(/<link[^>]*>([\s\S]*?)<\/link>/)||[])[1]));
+        const desc  = decodeHtml((item.match(/<description[^>]*>([\s\S]*?)<\/description>/)||[])[1]);
+        const src   = decodeHtml((item.match(/<News:Source[^>]*>([\s\S]*?)<\/News:Source>/)||[])[1]) || 'Bing News';
+        const pub   = (item.match(/<pubDate[^>]*>([\s\S]*?)<\/pubDate>/)||[])[1]?.trim();
+        const ts    = pub ? new Date(pub).toISOString() : null;
 
-      for (const item of items.slice(0, 5)) {
-        const titleMatch = item.match(/<title[^>]*>([^<]+)<\/title>/);
-        const descMatch = item.match(/<description[^>]*>([^<]+)<\/description>/);
-        const linkMatch = item.match(/<link[^>]*>([^<]+)<\/link>/);
+        // Solo noticias de HOY y que mencionen Culiacán
+        if (!title || title.length < 15) continue;
+        if (!tsIsToday(ts)) continue;
+        if (!/culiac[áa]n/i.test(title + ' ' + desc)) continue;
+        const key = title.slice(0, 50).toLowerCase().replace(/[^a-z0-9 ]/g,'');
+        if (seen.has(key)) continue;
+        seen.add(key);
 
-        const title = titleMatch?.[1]?.trim() || '';
-        const desc = descMatch?.[1]?.trim() || '';
-        const link = linkMatch?.[1]?.trim() || '';
-
-        if (title.length > 15) {
-          articles.push({
-            title: title.slice(0, 100),
-            snippet: desc.slice(0, 200),
-            url: link,
-            source: feed.name,
-          });
-        }
+        articles.push({ title: title.slice(0,110), snippet: desc.slice(0,220), url: link, source: src, timestamp: ts });
       }
-      await sleep(200);
+      await sleep(150);
     } catch (e) {
-      console.log(`[RSS] ${feed.name}: ${e.message}`);
+      console.log(`[RSS] Error: ${e.message}`);
     }
   }
+  return articles.slice(0, 15);
+}
 
-  return articles.slice(0, 10);
+// ── Clasificador por palabras clave (respaldo si la IA no responde) ───────────
+function classifyByKeywords(text) {
+  const t = (text||'').toLowerCase();
+  if (/balacer|disparo|tiroteo|ataque armad|ráfag/.test(t)) return 'balacera';
+  if (/enfrentamiento|agresi[óo]n armada|persecuci[óo]n/.test(t)) return 'enfrentamiento';
+  if (/secuestr|privad\w+ de la libertad|levant[óo]/.test(t)) return 'secuestro';
+  if (/cuerpo|cad[áa]ver|restos|fosa|encobijad|localiza\w+ sin vida/.test(t)) return 'hallazgo';
+  if (/robo|asalt|despoj/.test(t)) return 'robo';
+  if (/homicid|asesinat|ejecu|matan|priva\w+ de la vida|muert\w+ a (balazos|tiros)/.test(t)) return 'homicidio';
+  return 'otro';
+}
+
+// ── Detectar colonia mencionada en el texto (cruza con GEO_DB) ────────────────
+function detectLocation(text) {
+  const t = (text||'').toLowerCase();
+  for (const [aliases] of GEO) {
+    for (const a of aliases) {
+      if (a.length > 3 && t.includes(a)) return a;
+    }
+  }
+  return 'Culiacán';
 }
 
 // ── FALLBACK 4: Generar eventos plausibles (demo mode) ──────────────────────
@@ -480,38 +532,58 @@ async function runPipeline(env) {
     console.log(`[NewsAPI] Fallo: ${e.message}`);
   }
 
-  // RUTA C: RSS feeds locales
-  console.log('[Pipeline] Intentando RSS feeds locales...');
+  // RUTA C: Google News RSS — noticias reales del día (IA opcional)
+  console.log('[Pipeline] Buscando noticias del día via Google News RSS...');
   try {
     const articles = await searchRSSFeeds();
-    console.log(`[RSS] ${articles.length} artículos encontrados`);
+    console.log(`[RSS] ${articles.length} noticias de hoy encontradas`);
 
-    for (const article of articles.slice(0, 8)) {
+    for (const article of articles) {
       try {
-        const analysis = await analyzeWithGroq(article, keys);
-        if (!analysis.isViolence) continue;
+        const fullText = `${article.title} ${article.snippet}`;
+        let type = classifyByKeywords(fullText);
+        let location = detectLocation(fullText);
+        let title = article.title;
+        let summary = article.snippet || article.title;
+        let aiConfirmed = false;
 
-        const coords = await resolveCoords(analysis.location || article.title);
+        // La IA ENRIQUECE (limpia título, ubicación, resumen). No veta por sí sola.
+        if (keys.length) {
+          try {
+            const a = await analyzeWithGroq(article, keys);
+            if (a.isViolence) {
+              aiConfirmed = true;
+              type = a.type || type;
+              location = a.location || location;
+              title = a.title || title;
+              summary = a.summary || summary;
+            }
+          } catch { /* IA no disponible: seguimos con clasificación por keywords */ }
+        }
+
+        // Incluir si la IA lo confirma O si las keywords detectan violencia clara.
+        // Solo se descarta lo verdaderamente ambiguo (sin tipo y sin confirmación).
+        if (!aiConfirmed && type === 'otro') continue;
+
+        const coords = await resolveCoords(location, `${location}, Culiacán, Sinaloa`);
         const ok = await saveEvent(env.EVENTS_KV, {
-          type: analysis.type||'otro',
-          location: analysis.location||'Culiacán',
-          ...coords,
-          summary: analysis.summary||article.snippet.slice(0,150),
-          title: analysis.title||article.title.slice(0,80),
+          type, location, ...coords,
+          summary: summary.slice(0,180),
+          title: title.slice(0,110),
           url: article.url,
-          source: 'RSS Local',
-          color: TYPE_COLOR[analysis.type]||TYPE_COLOR.otro,
-          timestamp: new Date().toISOString(),
-          dataSource: 'rss-groq',
+          source: article.source || 'Google News',
+          color: TYPE_COLOR[type] || TYPE_COLOR.otro,
+          timestamp: article.timestamp || new Date().toISOString(),
+          dataSource: 'rss-news',
         });
         if (ok) saved++;
-        await sleep(300);
+        await sleep(200);
       } catch (e) {
-        console.log(`[RSS] Error analizando artículo: ${e.message}`);
+        console.log(`[RSS] Error procesando noticia: ${e.message}`);
       }
     }
     if (saved > 0) {
-      console.log(`[RSS] ${saved} nuevos eventos guardados`);
+      console.log(`[RSS] ${saved} noticias reales guardadas`);
       return;
     }
   } catch (e) {
@@ -613,6 +685,16 @@ export default {
         }
       }
 
+      if (p==='/api/rsstest') {
+        const articles = await searchRSSFeeds();
+        const keys = [env.GROQ_API_KEY, env.GROQ_API_KEY_1, env.GROQ_API_KEY_2].filter(k=>k);
+        const sample = articles.slice(0,3).map(a => ({ title:a.title, ts:a.timestamp, kw:classifyByKeywords(a.title+' '+a.snippet), loc:detectLocation(a.title+' '+a.snippet) }));
+        let aiSample = null;
+        if (articles[0] && keys.length) { try { aiSample = await analyzeWithGroq(articles[0], keys); } catch(e){ aiSample = {err:e.message}; } }
+        return new Response(JSON.stringify({ rssCount: articles.length, sample, aiSample }, null, 2),
+          { headers:{'Content-Type':'application/json'} });
+      }
+
       if (p==='/api/status') {
         const events = await readEvents(env.EVENTS_KV);
         return new Response(JSON.stringify({ total:events.length, time:new Date().toISOString(), kvOk:true }),
@@ -622,16 +704,29 @@ export default {
       if (p==='/api/debug') {
         const events = await readEvents(env.EVENTS_KV);
         const keys = [env.GROQ_API_KEY, env.GROQ_API_KEY_1, env.GROQ_API_KEY_2].filter(k=>k);
+        // Test de salud de la IA (Groq)
+        let groqStatus = 'sin llaves';
+        if (keys.length) {
+          try {
+            await groqCall(keys, MODEL_STD, [{ role:'user', content:'di ok' }], 5);
+            groqStatus = 'OK (IA respondiendo)';
+          } catch (e) { groqStatus = 'FALLO: ' + e.message; }
+        }
+        if (url.searchParams.get('groq') === '1') {
+          return new Response(JSON.stringify({ groqKeys: keys.length, groqStatus, model: MODEL_STD }, null, 2),
+            { headers:{'Content-Type':'application/json'} });
+        }
         return new Response(JSON.stringify({
           kvEvents: events.length,
           storage: 'single-key (events)',
           pipeline: {
-            primary: 'Groq compound + web search',
-            fallback1: 'News API (Reddit) + Groq analysis',
-            fallback2: 'RSS feeds (Bloomberg/Reuters) + Groq analysis',
+            primary: 'Groq compound + web search (IA)',
+            fallback1: 'News API (Reddit) + análisis IA',
+            fallback2: 'Google News RSS (noticias del día) + IA opcional',
             fallback3: 'Manual seed via /api/seed',
           },
           groqKeys: keys.length,
+          groqStatus,
           model: MODEL_SRCH,
           refreshInterval: '1 minuto (cron) — escaneo real de fuentes',
           demoFallback: 'máximo cada 12 h',
