@@ -1005,6 +1005,8 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(
 #scan-btn{background:transparent;border:1px solid #2a2a38;color:#555;border-radius:2px;padding:3px 8px;font-size:10px;cursor:pointer;white-space:nowrap}
 #scan-btn:hover{border-color:var(--red);color:var(--red)}
 #scan-btn:disabled{opacity:.3;cursor:default}
+#geo-btn{display:none;background:transparent;border:1px solid #1f6f5c;color:#2bb894;border-radius:2px;font-size:10px;cursor:pointer;white-space:nowrap;font-weight:600}
+#geo-btn:hover{background:#2bb894;color:#001}
 
 /* layout */
 #main{display:flex;flex:1;overflow:hidden}
@@ -1104,7 +1106,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(
 
 /* responsive - TABLET */
 @media(max-width:1024px){
-  #topbar{gap:4px;padding:0 8px;height:40px}
+  #top{gap:4px;padding:0 8px;height:40px}
   .brand{font-size:11px}
   #stats{gap:8px}
   .st .v{font-size:14px}
@@ -1114,14 +1116,30 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(
 
 /* responsive - MOBILE */
 @media(max-width:768px){
-  /* topbar ajustes */
-  #topbar{height:44px;padding:0 10px}
-  .brand{font-size:10px;letter-spacing:.8px}
+  /* topbar VERTICAL: se acomoda en filas, todo visible y distribuido */
+  /* GRID con áreas: filas deterministas (marca / chips / buscador / botones / stats) */
+  #top{display:grid;height:auto;overflow:visible;gap:7px 6px;padding:8px;align-items:center;
+    grid-template-columns:1fr 1fr 1fr;
+    grid-template-areas:
+      "brand brand brand"
+      "live  lang  donate"
+      "search search search"
+      "set   geo   scan"
+      "stats stats stats";}
+  .brand{grid-area:brand;font-size:12px;text-align:center;letter-spacing:.5px}
   .brand b{display:none}
-  .live{padding:2px 6px;font-size:9px}
-  #stats{display:none}
+  .live{grid-area:live;justify-self:start;padding:3px 7px;font-size:9px}
+  #lang-btn{grid-area:lang;width:100%;padding:7px 4px}
+  #donate-btn{grid-area:donate;width:100%;text-align:center;padding:7px 4px}
+  #location-input{grid-area:search;width:100%;min-width:0;font-size:16px!important;padding:10px 11px;color:#cfcfd8;border-color:#33333f}
+  #location-btn{grid-area:set;width:100%;padding:10px 4px;font-size:12px;text-align:center;color:#cfcfd8;border-color:#33333f}
+  #geo-btn{grid-area:geo;display:inline-flex;align-items:center;justify-content:center;width:100%;padding:10px 4px;font-size:12px}
+  #scan-btn{grid-area:scan;width:100%;padding:10px 4px;font-size:12px;text-align:center;color:#cfcfd8;border-color:#33333f}
+  #stats{grid-area:stats;display:flex;gap:26px;justify-content:center}
+  .st .v{font-size:17px}
+  .st .l{font-size:8px}
   #ticker-wrap{display:none}
-  #scan-btn{padding:3px 6px;font-size:9px}
+  #new-badge{display:none}
 
   /* sidebar → drawer bottom */
   #sb{position:fixed;bottom:0;left:0;right:0;width:100%!important;max-height:70vh;z-index:999;border-right:none;border-top:2px solid var(--red);border-radius:14px 14px 0 0;transform:translateY(100%);transition:transform .3s cubic-bezier(.4,0,.2,1);box-shadow:0 -6px 30px rgba(0,0,0,.9);background:var(--bg2)}
@@ -1184,11 +1202,10 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(
 
 /* responsive - SMALL PHONE */
 @media(max-width:480px){
-  #topbar{height:42px}
-  .brand{font-size:9px}
-  .live{font-size:8px;padding:1px 5px}
-  #scan-btn{padding:2px 5px;font-size:8px}
-  #donate-btn{padding:2px 5px;font-size:8px}
+  #top{min-height:42px}
+  .brand{font-size:10px;flex:1 1 100%;text-align:center}
+  .live{font-size:8px;padding:2px 6px}
+  #donate-btn{font-size:11px}
 
   #sb-head{padding:8px}
   #type-filter{font-size:11px}
@@ -1221,6 +1238,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(
   <div class="live"><div class="ld"></div><span id="live-text">EN VIVO</span></div>
   <input type="text" id="location-input" placeholder="Buscar ubicación..." maxlength="60" style="flex:.8;min-width:120px;background:transparent;border:1px solid #2a2a38;color:#888;padding:3px 7px;border-radius:2px;font-size:10px;outline:none" />
   <button id="location-btn" style="background:transparent;border:1px solid #2a2a38;color:#888;padding:3px 8px;border-radius:2px;font-size:10px;cursor:pointer;white-space:nowrap;transition:all .2s">ESTABLECER</button>
+  <button id="geo-btn" onclick="geoSearchHere()" title="Buscar en mi ubicación">📍 AQUÍ</button>
   <div id="stats">
     <div class="st"><span class="v" id="sc-total">—</span><span class="l" id="st-total">Total</span></div>
     <div class="st"><span class="v" id="sc-24h">—</span><span class="l" id="st-24h">24h</span></div>
@@ -1255,7 +1273,7 @@ body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(
 </div>
 
 <button id="mob-btn" onclick="toggleSb()">VER</button>
-<button id="user-loc-btn" onclick="toggleUserLocation()" title="Mi ubicacion"></button>
+<button id="user-loc-btn" onclick="geoSearchHere()" title="Buscar en mi ubicacion">📍</button>
 <div id="user-loc-status"></div>
 
 <div id="mine-modal">
@@ -1427,6 +1445,38 @@ function toggleUserLocation(){
   } else {
     startUserLocation();
   }
+}
+
+// Detectar la ciudad del usuario por GPS y cargar el monitor de ese lugar
+function geoSearchHere(){
+  const status=document.getElementById('user-loc-status');
+  const gb=document.getElementById('geo-btn');
+  if(!navigator.geolocation){ if(status)status.textContent=t('no_geoloc'); return; }
+  if(status)status.textContent='Ubicando...';
+  if(gb){gb.disabled=true;gb.textContent='⏳';}
+  navigator.geolocation.getCurrentPosition(async pos=>{
+    const {latitude:lat,longitude:lng}=pos.coords;
+    try{ showUserOnMap(lat,lng); map.setView([lat,lng],12); }catch{}
+    if(status)status.textContent='Detectando ciudad...';
+    try{
+      const r=await fetch('https://nominatim.openstreetmap.org/reverse?format=json&zoom=10&accept-language=es&lat='+lat+'&lon='+lng);
+      const d=await r.json();
+      const a=d.address||{};
+      const city=a.city||a.town||a.municipality||a.village||a.county||a.state;
+      if(!city){ if(status)status.textContent='No se detectó ciudad'; if(gb){gb.disabled=false;gb.textContent='📍 AQUÍ';} return; }
+      if(slugifyJS(city)===slugifyJS(CITY_NAME)){
+        if(status)status.textContent=city+' (actual)';
+        if(gb){gb.disabled=false;gb.textContent='📍 AQUÍ';}
+        reloadEvents();
+      } else {
+        if(status)status.textContent='Buscando en '+city+'...';
+        location.href=location.pathname+(slugifyJS(city)==='culiacan'?'':'?ciudad='+encodeURIComponent(city));
+      }
+    }catch(e){ if(status)status.textContent='Error de geolocalización'; if(gb){gb.disabled=false;gb.textContent='📍 AQUÍ';} }
+  }, err=>{
+    if(status)status.textContent=t('denied');
+    if(gb){gb.disabled=false;gb.textContent='📍 AQUÍ';}
+  }, {enableHighAccuracy:true,timeout:12000,maximumAge:0});
 }
 
 function startUserLocation(){
