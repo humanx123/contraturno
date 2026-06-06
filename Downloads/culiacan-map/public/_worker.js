@@ -124,28 +124,49 @@ function eventsKey(city) {
   return (city && city.slug && city.slug !== 'culiacan') ? 'events:'+city.slug : EVENTS_KEY;
 }
 
-// ── Nominatim (con contexto de ciudad) ────────────────────────────────────────
+// ── Nominatim (con contexto de ciudad y nivel de precisión) ───────────────────
 async function nominatim(q, city) {
   const ctx = city || DEFAULT_CITY;
+  if (!q) return null;
+  // No duplicar la ciudad si la consulta ya la incluye
+  const hasCity = slugify(q).includes(slugify(ctx.name).split('-')[0]);
+  const full = hasCity ? q : (q + ', ' + ctx.name + ', ' + ctx.region);
   try {
     const r = await fetch(
-      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(q+', '+ctx.name+', '+ctx.region)}&format=json&limit=1&countrycodes=mx`,
+      `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(full)}&format=json&limit=1&countrycodes=mx&addressdetails=1`,
       { headers: { 'User-Agent': 'ViolenceMonitor/3.0' } }
     );
     const d = await r.json();
     if (!d.length) return null;
     const lat = parseFloat(d[0].lat), lng = parseFloat(d[0].lon);
     // Aceptar si cae a menos de ~0.6° del centro de la ciudad
-    if (Math.abs(lat-ctx.lat) < 0.6 && Math.abs(lng-ctx.lng) < 0.6) return { lat, lng, geoSource: 'osm' };
-    return null;
+    if (Math.abs(lat-ctx.lat) >= 0.6 || Math.abs(lng-ctx.lng) >= 0.6) return null;
+    // Etiquetar precisión según el tipo de objeto que devolvió OSM
+    const at = d[0].addresstype || d[0].type || '';
+    let geoSource = 'osm';
+    if (/house|building|amenity|shop/.test(at)) geoSource = 'osm-exacta';
+    else if (/road|highway|residential|street/.test(at)) geoSource = 'osm-calle';
+    else if (/neighbourhood|suburb|quarter|hamlet/.test(at)) geoSource = 'osm-colonia';
+    return { lat, lng, geoSource };
   } catch { return null; }
 }
 
+// Intenta geocodificar con la MAYOR precisión: primero la consulta fina de la IA,
+// luego la base local de colonias (Culiacán), y al final el centro de la ciudad.
 async function resolveCoords(loc, query, city) {
   const ctx = city || DEFAULT_CITY;
-  return (ctx.local && localGeo(loc))
-    || (ctx.local && localGeo(query))
-    || await nominatim(query||loc, ctx)
+  // 1) Consulta precisa de la IA (calle/cruce/referencia) → OSM
+  if (query) {
+    const osm = await nominatim(query, ctx);
+    if (osm) return osm;
+  }
+  // 2) Base local de colonias (solo Culiacán)
+  if (ctx.local) {
+    const g = localGeo(loc) || localGeo(query);
+    if (g) return g;
+  }
+  // 3) OSM con el nombre del lugar / colonia
+  return await nominatim(loc, ctx)
     || await nominatim((loc||'').split(',')[0], ctx)
     || { lat: ctx.lat, lng: ctx.lng, geoSource: 'fallback' };
 }
@@ -203,8 +224,10 @@ async function searchWeb(apiKeys, city = DEFAULT_CITY) {
 
 IMPORTANTE: Solo eventos que ocurrieron DENTRO de ${C}.
 
+Para cada evento, ubica el lugar con la MAYOR precisión posible: calle y número, cruce de calles, o punto de referencia; si no, la colonia. NO inventes calles que no aparezcan en la fuente.
+
 Responde SOLO con un array JSON (máximo 8 eventos), sin texto adicional:
-[{"title":"título corto","type":"homicidio|balacera|enfrentamiento|secuestro|hallazgo|robo|otro","location":"colonia o calle en ${C}","nominatimQuery":"lugar, ${C}, ${R}","summary":"2 oraciones","source":"medio","url":""}]
+[{"title":"título corto","type":"homicidio|balacera|enfrentamiento|secuestro|hallazgo|robo|otro","location":"lugar más específico","nominatimQuery":"calle/cruce/referencia, colonia, ${C}, ${R}","precision":"calle|cruce|colonia|zona|ciudad","summary":"2 oraciones","source":"medio","url":""}]
 
 Si no hay noticias recientes de violencia en ${C}, responde: []`
   }], 1200);
@@ -270,22 +293,28 @@ async function searchNewsAPI(city = DEFAULT_CITY) {
 
 // ── FALLBACK 2: Parsear resultados DDG con Groq (si keys disponibles) ────────
 async function analyzeWithGroq(article, apiKeys, city = DEFAULT_CITY) {
-  const C = city.name;
+  const C = city.name, R = city.region;
   try {
     const d = await groqCall(apiKeys, MODEL_STD, [{
       role: 'user',
-      content: `Eres analista de seguridad. Lee este resultado de búsqueda y extrae información de violencia en ${C}:
+      content: `Eres analista de seguridad y geolocalización. Lee esta noticia y extrae el incidente de violencia en ${C}.
 
 Título: "${article.title || ''}"
-Snippet: "${article.snippet || ''}"
+Texto: "${article.snippet || ''}"
 
-Si contiene info de un incidente de violencia en ${C} (solo ${C}), responde JSON:
-{"isViolence":true,"type":"homicidio|balacera|enfrentamiento|secuestro|hallazgo|robo|otro","location":"colonia o zona específica","summary":"2 oraciones cortas","title":"título limpio"}
+Si es un incidente de violencia en ${C} (solo ${C}), responde JSON:
+{"isViolence":true,"type":"homicidio|balacera|enfrentamiento|secuestro|hallazgo|robo|otro","location":"el lugar MÁS específico mencionado","nominatimQuery":"consulta para geocodificar con máxima precisión","precision":"calle|cruce|colonia|zona|ciudad","summary":"2 oraciones","title":"título limpio"}
 
-Si NO es sobre ${C} o no es violencia, responde: {"isViolence":false}
+REGLAS DE UBICACIÓN (máxima precisión posible):
+- Extrae lo MÁS específico que aparezca en el texto: número y calle ("Av. Álvaro Obregón 2300"), cruce de calles ("calle Río Bravo y Río Tamazula"), punto de referencia ("frente al Oxxo de la Rafael Buelna"), o colonia/fraccionamiento.
+- "nominatimQuery" = ese lugar + ", ${C}, ${R}" listo para OpenStreetMap. Usa el dato más fino disponible. Ej: "Río Bravo esquina Río Tamazula, Tierra Blanca, ${C}, ${R}".
+- "precision" = qué tan fino es: "calle" (calle+número), "cruce" (intersección), "colonia", "zona" (sector/rumbo) o "ciudad" (sin pista específica).
+- No inventes calles ni números que no estén en el texto. Si solo hay colonia, usa colonia.
+
+Si NO es sobre ${C} o no es violencia: {"isViolence":false}
 
 SOLO JSON, nada más.`
-    }], 400);
+    }], 500);
 
     const content = d.choices?.[0]?.message?.content || '{"isViolence":false}';
     const m = content.match(/\{[\s\S]*?\}/);
@@ -537,7 +566,7 @@ async function runPipeline(env, city = DEFAULT_CITY) {
       for (const ev of events) {
         const coords = await resolveCoords(ev.location, ev.nominatimQuery, city);
         const ok = await saveEvent(env.EVENTS_KV, {
-          type: ev.type||'otro', location: ev.location||city.name, ...coords,
+          type: ev.type||'otro', location: ev.location||city.name, precision: ev.precision||null, ...coords,
           summary: ev.summary||'', title: ev.title, url: ev.url||'',
           source: ev.source||'Groq', color: TYPE_COLOR[ev.type]||TYPE_COLOR.otro,
           timestamp: new Date().toISOString(), dataSource: 'groq-compound',
@@ -604,9 +633,11 @@ async function runPipeline(env, city = DEFAULT_CITY) {
         let location = detectLocation(fullText, city);
         let title = article.title;
         let summary = article.snippet || article.title;
+        let nq = null, precision = null;
         let aiConfirmed = false;
 
-        // La IA ENRIQUECE (limpia título, ubicación, resumen). No veta por sí sola.
+        // La IA ENRIQUECE: limpia título, ubicación y arma una consulta de
+        // geolocalización lo más precisa posible. No veta por sí sola.
         if (keys.length) {
           try {
             const a = await analyzeWithGroq(article, keys, city);
@@ -616,6 +647,8 @@ async function runPipeline(env, city = DEFAULT_CITY) {
               location = a.location || location;
               title = a.title || title;
               summary = a.summary || summary;
+              nq = a.nominatimQuery || null;
+              precision = a.precision || null;
             }
           } catch { /* IA no disponible: seguimos con clasificación por keywords */ }
         }
@@ -623,9 +656,10 @@ async function runPipeline(env, city = DEFAULT_CITY) {
         // Incluir si la IA lo confirma O si las keywords detectan violencia clara.
         if (!aiConfirmed && type === 'otro') continue;
 
-        const coords = await resolveCoords(location, `${location}, ${city.name}, ${city.region}`, city);
+        // Geocodificar con la consulta precisa de la IA (calle/cruce/referencia)
+        const coords = await resolveCoords(location, nq || `${location}, ${city.name}, ${city.region}`, city);
         const ok = await saveEvent(env.EVENTS_KV, {
-          type, location, ...coords,
+          type, location, precision, ...coords,
           summary: summary.slice(0,180),
           title: title.slice(0,110),
           url: article.url,
@@ -1408,7 +1442,8 @@ function mkPopup(ev){
   const c=TC[ev.type]||TC.otro;
   const lang = currentLang === 'es' ? 'es-MX' : 'en-US';
   const dt=new Date(ev.timestamp).toLocaleString(lang,{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});
-  const geoLabel={db:'DB local',osm:'OSM preciso',fallback:'aprox'}[ev.geoSource]||ev.geoSource;
+  const geoLabel={db:'colonia (DB)','osm-exacta':'📍 dirección exacta','osm-calle':'📍 a nivel de calle','osm-colonia':'colonia (OSM)',osm:'OSM',fallback:'aprox. (centro ciudad)'}[ev.geoSource]||ev.geoSource;
+  const precLabel=ev.precision?\` · \${x(ev.precision)}\`:'';
   const coords=ev.lat&&ev.lng?\`\${ev.lat.toFixed(5)}, \${ev.lng.toFixed(5)}\`:'';
   const shareUrl=\`\${location.origin}/?e=\${ev.id}\`;
   return \`<div class="pop" style="--c:\${c}">
@@ -1416,7 +1451,7 @@ function mkPopup(ev){
     <h4>\${x(ev.title)}</h4>
     <p>\${x(ev.summary||'')}</p>
     <div class="pop-meta">\${x(ev.location)}<br>\${dt} · \${x(ev.source)}<br>
-    <span class="pop-coords">\${geoLabel} · \${coords}</span></div>
+    <span class="pop-coords">\${geoLabel}\${precLabel} · \${coords}</span></div>
     <div class="pop-actions">
       \${ev.url?\`<a href="\${ev.url}" target="_blank" rel="noopener">\${t('view_note')}</a>\`:''}
       <button onclick="copyShare('\${shareUrl}')">\${t('copy_link')}</button>
