@@ -356,53 +356,67 @@ function realUrl(link) {
   return link;
 }
 
-// ── FUENTE RSS REAL: Bing News RSS (funciona desde Cloudflare, noticias del día)
+// ── FUENTES RSS REALES: Google News + Bing News (noticias del día) ────────────
 async function searchRSSFeeds(city = DEFAULT_CITY) {
   const C = city.name;
+  const region1 = city.region.split(',')[0];
   const queries = [
     `${C} balacera OR homicidio OR ejecutado`,
     `${C} enfrentamiento OR asesinato OR violencia`,
-    `${C} ${city.region.split(',')[0]} cuerpo OR secuestro OR "ataque armado"`,
+    `${C} ${region1} cuerpo OR secuestro OR "ataque armado"`,
   ];
   const token = slugify(C).split('-')[0];          // p.ej. "culiacan" / "mazatlan"
   const seen = new Set();
   const articles = [];
 
-  for (const q of queries) {
-    const url = `https://www.bing.com/news/search?q=${encodeURIComponent(q)}&format=rss&qft=interval%3d%227%22&setlang=es-MX&cc=MX`;
-    try {
-      const r = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
-        cf: { cacheTtl: 120 },
-      });
-      if (!r.ok) { console.log(`[RSS] Bing ${r.status}`); continue; }
-      const xml = await r.text();
-      const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
+  // Google News primero (suele dar 503 desde Cloudflare; si funciona, suma),
+  // luego Bing News (estable desde el Worker).
+  const providers = [
+    { name:'Google News', url:q => `https://news.google.com/rss/search?q=${encodeURIComponent(q+' when:1d')}&hl=es-419&gl=MX&ceid=MX:es-419` },
+    { name:'Bing News',   url:q => `https://www.bing.com/news/search?q=${encodeURIComponent(q)}&format=rss&qft=interval%3d%227%22&setlang=es-MX&cc=MX` },
+  ];
 
-      for (const item of items) {
-        const title = decodeHtml((item.match(/<title[^>]*>([\s\S]*?)<\/title>/)||[])[1]);
-        const link  = realUrl(decodeHtml((item.match(/<link[^>]*>([\s\S]*?)<\/link>/)||[])[1]));
-        const desc  = decodeHtml((item.match(/<description[^>]*>([\s\S]*?)<\/description>/)||[])[1]);
-        const src   = decodeHtml((item.match(/<News:Source[^>]*>([\s\S]*?)<\/News:Source>/)||[])[1]) || 'Bing News';
-        const pub   = (item.match(/<pubDate[^>]*>([\s\S]*?)<\/pubDate>/)||[])[1]?.trim();
-        const ts    = pub ? new Date(pub).toISOString() : null;
+  for (const prov of providers) {
+    for (const q of queries) {
+      try {
+        const r = await fetch(prov.url(q), {
+          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+          cf: { cacheTtl: 120 },
+        });
+        if (!r.ok) { console.log(`[RSS] ${prov.name} ${r.status}`); continue; }
+        const xml = await r.text();
+        const items = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
 
-        // Solo noticias de HOY y que mencionen la ciudad
-        if (!title || title.length < 15) continue;
-        if (!tsIsToday(ts, city.tz)) continue;
-        if (!slugify(title + ' ' + desc).includes(token)) continue;
-        const key = title.slice(0, 50).toLowerCase().replace(/[^a-z0-9 ]/g,'');
-        if (seen.has(key)) continue;
-        seen.add(key);
+        for (const item of items) {
+          let title = decodeHtml((item.match(/<title[^>]*>([\s\S]*?)<\/title>/)||[])[1]);
+          const link = realUrl(decodeHtml((item.match(/<link[^>]*>([\s\S]*?)<\/link>/)||[])[1]));
+          const desc = decodeHtml((item.match(/<description[^>]*>([\s\S]*?)<\/description>/)||[])[1]);
+          // Fuente del medio: Bing usa <News:Source>, Google usa <source>
+          let src = decodeHtml((item.match(/<News:Source[^>]*>([\s\S]*?)<\/News:Source>/)||[])[1])
+                 || decodeHtml((item.match(/<source[^>]*>([\s\S]*?)<\/source>/)||[])[1])
+                 || prov.name;
+          // Google News añade " - Medio" al final del título: lo limpiamos
+          if (prov.name === 'Google News' && / - [^-]{2,30}$/.test(title)) title = title.replace(/ - [^-]+$/, '');
+          const pub = (item.match(/<pubDate[^>]*>([\s\S]*?)<\/pubDate>/)||[])[1]?.trim();
+          const ts  = pub ? new Date(pub).toISOString() : null;
 
-        articles.push({ title: title.slice(0,110), snippet: desc.slice(0,220), url: link, source: src || 'Bing News', timestamp: ts });
+          // Solo noticias de HOY y que mencionen la ciudad
+          if (!title || title.length < 15) continue;
+          if (!tsIsToday(ts, city.tz)) continue;
+          if (!slugify(title + ' ' + desc).includes(token)) continue;
+          const k = slugify(title).slice(0, 42);     // dedup entre proveedores
+          if (seen.has(k)) continue;
+          seen.add(k);
+
+          articles.push({ title: title.slice(0,110), snippet: desc.slice(0,220), url: link, source: src || prov.name, timestamp: ts });
+        }
+        await sleep(150);
+      } catch (e) {
+        console.log(`[RSS] ${prov.name} error: ${e.message}`);
       }
-      await sleep(150);
-    } catch (e) {
-      console.log(`[RSS] Error: ${e.message}`);
     }
   }
-  return articles.slice(0, 15);
+  return articles.slice(0, 20);
 }
 
 // ── Clasificador por palabras clave (respaldo si la IA no responde) ───────────
@@ -552,177 +566,125 @@ async function saveEvent(kv, ev, key = EVENTS_KEY) {
 }
 
 // ── Pipeline principal con fallbacks (por ciudad) ─────────────────────────────
+// Escrituras KV agrupadas: 1 lectura + a lo sumo 1 escritura por escaneo
+// (clave para no agotar la cuota diaria de KV del plan gratuito).
 async function runPipeline(env, city = DEFAULT_CITY) {
   const keys = [env.GROQ_API_KEY, env.GROQ_API_KEY_1, env.GROQ_API_KEY_2].filter(k=>k);
   const KEY = eventsKey(city);
-  let saved = 0;
+  const store = await readEvents(env.EVENTS_KV, KEY);      // 1 sola lectura
+  const ids = new Set(store.map(e => e.id));
+  let saved = 0, dirty = false;
 
-  // RUTA A: Groq compound (web search + NLP)
-  console.log(`[Pipeline:${city.slug}] Intentando Groq compound...`);
-  try {
-    const events = await searchWeb(keys, city);
-    if (events.length > 0) {
-      console.log(`[Groq] ${events.length} eventos encontrados`);
-      for (const ev of events) {
-        const coords = await resolveCoords(ev.location, ev.nominatimQuery, city);
-        const ok = await saveEvent(env.EVENTS_KV, {
-          type: ev.type||'otro', location: ev.location||city.name, precision: ev.precision||null, ...coords,
-          summary: ev.summary||'', title: ev.title, url: ev.url||'',
-          source: ev.source||'Groq', color: TYPE_COLOR[ev.type]||TYPE_COLOR.otro,
-          timestamp: new Date().toISOString(), dataSource: 'groq-compound',
-        }, KEY);
-        if (ok) saved++;
-      }
-      if (saved > 0) {
-        console.log(`[Groq] ${saved} nuevos eventos guardados`);
-        return;
-      }
-    }
-  } catch (e) {
-    console.log(`[Groq] Fallo: ${e.message}`);
+  // Acumula en memoria (sin escribir KV en cada evento)
+  async function add(ev) {
+    const id = await hash((ev.dedupeKey || ev.title) + (ev.location||''));
+    if (ids.has(id)) return false;
+    ids.add(id);
+    const { dedupeKey, ...clean } = ev;
+    store.push({ id, ...clean });
+    dirty = true; saved++;
+    return true;
   }
+  // Escribe el lote completo una sola vez
+  async function commit() { if (dirty) { await writeEvents(env.EVENTS_KV, store, KEY); dirty = false; } }
 
-  // RUTA B: News API + Groq analysis
-  console.log('[Pipeline] Intentando News API...');
-  try {
-    const results = await searchNewsAPI(city);
-    console.log(`[DDG] ${results.length} resultados encontrados`);
-
-    for (const article of results.slice(0, 8)) {
-      try {
-        const analysis = await analyzeWithGroq(article, keys, city);
-        if (!analysis.isViolence) continue;
-
-        const coords = await resolveCoords(analysis.location || article.title, null, city);
-        const ok = await saveEvent(env.EVENTS_KV, {
-          type: analysis.type||'otro',
-          location: analysis.location||city.name,
-          ...coords,
-          summary: analysis.summary||article.snippet.slice(0,150),
-          title: analysis.title||article.title.slice(0,80),
-          url: article.url,
-          source: 'DuckDuckGo',
-          color: TYPE_COLOR[analysis.type]||TYPE_COLOR.otro,
-          timestamp: new Date().toISOString(),
-          dataSource: 'ddg-groq',
-        }, KEY);
-        if (ok) saved++;
-        await sleep(300);
-      } catch (e) {
-        console.log(`[DDG] Error analizando artículo: ${e.message}`);
-      }
-    }
-    if (saved > 0) {
-      console.log(`[NewsAPI] ${saved} nuevos eventos guardados`);
-      return;
-    }
-  } catch (e) {
-    console.log(`[NewsAPI] Fallo: ${e.message}`);
-  }
-
-  // RUTA C: Bing News RSS — noticias reales del día (IA opcional)
-  console.log('[Pipeline] Buscando noticias del día via Bing News RSS...');
+  // RUTA 1 (PRINCIPAL): Google News + Bing News RSS + IA — noticias reales del día
+  console.log(`[Pipeline:${city.slug}] Buscando noticias del día via RSS (Google+Bing) + IA...`);
   try {
     const articles = await searchRSSFeeds(city);
     console.log(`[RSS] ${articles.length} noticias de hoy encontradas`);
-
     for (const article of articles) {
       try {
         const fullText = `${article.title} ${article.snippet}`;
         let type = classifyByKeywords(fullText);
         let location = detectLocation(fullText, city);
-        let title = article.title;
-        let summary = article.snippet || article.title;
-        let nq = null, precision = null;
-        let aiConfirmed = false;
-
-        // La IA ENRIQUECE: limpia título, ubicación y arma una consulta de
-        // geolocalización lo más precisa posible. No veta por sí sola.
+        let title = article.title, summary = article.snippet || article.title;
+        let nq = null, precision = null, aiConfirmed = false;
+        // La IA ENRIQUECE (título/ubicación/consulta precisa). No veta por sí sola.
         if (keys.length) {
           try {
             const a = await analyzeWithGroq(article, keys, city);
             if (a.isViolence) {
               aiConfirmed = true;
-              type = a.type || type;
-              location = a.location || location;
-              title = a.title || title;
-              summary = a.summary || summary;
-              nq = a.nominatimQuery || null;
-              precision = a.precision || null;
+              type = a.type || type; location = a.location || location;
+              title = a.title || title; summary = a.summary || summary;
+              nq = a.nominatimQuery || null; precision = a.precision || null;
             }
-          } catch { /* IA no disponible: seguimos con clasificación por keywords */ }
+          } catch { /* IA no disponible: seguimos con keywords */ }
         }
-
-        // Incluir si la IA lo confirma O si las keywords detectan violencia clara.
         if (!aiConfirmed && type === 'otro') continue;
-
-        // Geocodificar con la consulta precisa de la IA (calle/cruce/referencia)
         const coords = await resolveCoords(location, nq || `${location}, ${city.name}, ${city.region}`, city);
-        const ok = await saveEvent(env.EVENTS_KV, {
+        await add({
           type, location, precision, ...coords,
-          summary: summary.slice(0,180),
-          title: title.slice(0,110),
-          url: article.url,
-          source: article.source || 'Bing News',
+          summary: summary.slice(0,180), title: title.slice(0,110),
+          url: article.url, source: article.source || 'Noticias',
           color: TYPE_COLOR[type] || TYPE_COLOR.otro,
-          timestamp: article.timestamp || new Date().toISOString(),
-          dataSource: 'rss-news',
-        }, KEY);
-        if (ok) saved++;
-        await sleep(200);
-      } catch (e) {
-        console.log(`[RSS] Error procesando noticia: ${e.message}`);
-      }
+          timestamp: article.timestamp || new Date().toISOString(), dataSource: 'rss-news',
+        });
+      } catch (e) { console.log(`[RSS] Error noticia: ${e.message}`); }
     }
-    if (saved > 0) {
-      console.log(`[RSS] ${saved} noticias reales guardadas`);
-      return;
-    }
-  } catch (e) {
-    console.log(`[RSS] Fallo: ${e.message}`);
-  }
+    if (saved > 0) { await commit(); console.log(`[RSS] ${saved} guardados`); return; }
+  } catch (e) { console.log(`[RSS] Fallo: ${e.message}`); }
 
-  // RUTA D: Demo events (relleno — máximo una tanda cada 12 h, por ciudad)
+  // RUTA 2 (respaldo): Groq compound (búsqueda web con IA)
+  console.log('[Pipeline] Respaldo: Groq compound...');
+  try {
+    const events = await searchWeb(keys, city);
+    for (const ev of events) {
+      const coords = await resolveCoords(ev.location, ev.nominatimQuery, city);
+      await add({
+        type: ev.type||'otro', location: ev.location||city.name, precision: ev.precision||null, ...coords,
+        summary: ev.summary||'', title: ev.title, url: ev.url||'',
+        source: ev.source||'Groq', color: TYPE_COLOR[ev.type]||TYPE_COLOR.otro,
+        timestamp: new Date().toISOString(), dataSource: 'groq-compound',
+      });
+    }
+    if (saved > 0) { await commit(); console.log(`[Groq] ${saved} guardados`); return; }
+  } catch (e) { console.log(`[Groq] Fallo: ${e.message}`); }
+
+  // RUTA 3 (respaldo): News API (Reddit) + IA
+  console.log('[Pipeline] Respaldo: News API...');
+  try {
+    const results = await searchNewsAPI(city);
+    for (const article of results.slice(0, 8)) {
+      try {
+        const analysis = await analyzeWithGroq(article, keys, city);
+        if (!analysis.isViolence) continue;
+        const coords = await resolveCoords(analysis.location || article.title, analysis.nominatimQuery, city);
+        await add({
+          type: analysis.type||'otro', location: analysis.location||city.name, precision: analysis.precision||null, ...coords,
+          summary: analysis.summary||article.snippet.slice(0,150),
+          title: analysis.title||article.title.slice(0,80),
+          url: article.url, source: 'Reddit',
+          color: TYPE_COLOR[analysis.type]||TYPE_COLOR.otro,
+          timestamp: new Date().toISOString(), dataSource: 'reddit-groq',
+        });
+        await sleep(300);
+      } catch (e) { console.log(`[DDG] Error: ${e.message}`); }
+    }
+    if (saved > 0) { await commit(); console.log(`[NewsAPI] ${saved} guardados`); return; }
+  } catch (e) { console.log(`[NewsAPI] Fallo: ${e.message}`); }
+
+  // RUTA D: Demo (relleno — máximo una tanda cada 12 h, por ciudad)
   const DEMO_INTERVAL = 12 * 60 * 60 * 1000;
   const demoKey = 'demo_last:' + city.slug;
   const lastDemo = Number(await env.EVENTS_KV.get(demoKey)) || 0;
-  if (Date.now() - lastDemo < DEMO_INTERVAL) {
-    console.log('[Demo] Omitido — última tanda hace <12h');
-    console.log('[Pipeline] Completado - eventos disponibles en KV');
-    return;
-  }
+  if (Date.now() - lastDemo < DEMO_INTERVAL) { console.log('[Demo] Omitido (<12h)'); return; }
   console.log('[Pipeline] Generando eventos demo...');
   try {
-    const demoEvents = generateDemoEvents(city);
-    console.log(`[Demo] ${demoEvents.length} eventos generados`);
-
-    for (const ev of demoEvents) {
+    for (const ev of generateDemoEvents(city)) {
       const coords = await resolveCoords(ev.location, ev.nominatimQuery, city);
-      const ok = await saveEvent(env.EVENTS_KV, {
-        type: ev.type||'otro',
-        location: ev.location||city.name,
-        ...coords,
-        summary: ev.summary||'',
-        title: ev.title,
-        dedupeKey: ev.dedupeKey,
-        url: ev.url||'',
-        source: ev.source||'Demo',
-        color: TYPE_COLOR[ev.type]||TYPE_COLOR.otro,
-        timestamp: new Date().toISOString(),
-        dataSource: 'demo-monitor',
-      }, KEY);
-      if (ok) saved++;
+      await add({
+        type: ev.type||'otro', location: ev.location||city.name, ...coords,
+        summary: ev.summary||'', title: ev.title, dedupeKey: ev.dedupeKey, url: ev.url||'',
+        source: ev.source||'Demo', color: TYPE_COLOR[ev.type]||TYPE_COLOR.otro,
+        timestamp: new Date().toISOString(), dataSource: 'demo-monitor',
+      });
     }
+    await commit();                                   // escribe eventos demo
     await env.EVENTS_KV.put(demoKey, String(Date.now()));
-    if (saved > 0) {
-      console.log(`[Demo] ${saved} nuevos eventos guardados`);
-      return;
-    }
-  } catch (e) {
-    console.log(`[Demo] Error: ${e.message}`);
-  }
-
-  console.log('[Pipeline] Completado - eventos disponibles en KV');
+    console.log(`[Demo] ${saved} guardados`);
+  } catch (e) { console.log(`[Demo] Error: ${e.message}`); }
 }
 
 // ── ¿El evento es de HOY? (zona horaria de la ciudad) ─────────────────────────
@@ -773,8 +735,55 @@ export default {
         return getEvents(env, city, ctx);
       }
 
+      if (p==='/api/cron') {
+        // Disparado por el Worker de cron: corre el pipeline SIN escribir scan_last
+        // (las escrituras KV solo ocurren si hay noticias nuevas, por el guardado en lote)
+        const city = await resolveCity(env, url);
+        ctx.waitUntil(runPipeline(env, city));
+        return new Response('{"ok":true}',{headers:{'Content-Type':'application/json'}});
+      }
+
       if (p==='/api/refresh' && req.method==='POST') {
         const city = await resolveCity(env, url);
+        if (url.searchParams.get('sync') === '1') {
+          try {
+            await runPipeline(env, city);
+            const ev = await readEvents(env.EVENTS_KV, eventsKey(city));
+            return new Response(JSON.stringify({ ok:true, total:ev.length }), {headers:{'Content-Type':'application/json'}});
+          } catch (e) {
+            return new Response(JSON.stringify({ ok:false, error:e.message, stack:(e.stack||'').slice(0,500) }), {headers:{'Content-Type':'application/json'}});
+          }
+        }
+        if (url.searchParams.get('sync') === '2') {
+          const keys = [env.GROQ_API_KEY, env.GROQ_API_KEY_1, env.GROQ_API_KEY_2].filter(k=>k);
+          const KEY = eventsKey(city);
+          const trace = [];
+          try {
+            const articles = await searchRSSFeeds(city);
+            trace.push('articles='+articles.length);
+            for (const article of articles) {
+              const step = { title: article.title.slice(0,40) };
+              try {
+                let type = classifyByKeywords(article.title+' '+article.snippet);
+                let location = detectLocation(article.title+' '+article.snippet, city);
+                let nq = null, aiConfirmed = false;
+                try { const a = await analyzeWithGroq(article, keys, city); step.ai = a.isViolence; if(a.isViolence){aiConfirmed=true; type=a.type||type; location=a.location||location; nq=a.nominatimQuery||null;} }
+                catch(e){ step.aiErr = e.message; }
+                step.type = type;
+                if (!aiConfirmed && type === 'otro') { step.skip='otro-sin-IA'; trace.push(step); continue; }
+                const coords = await resolveCoords(location, nq || `${location}, ${city.name}, ${city.region}`, city);
+                step.coords = coords.geoSource+' '+coords.lat;
+                const ok = await saveEvent(env.EVENTS_KV, { type, location, ...coords, summary:article.snippet, title:article.title, url:article.url, source:article.source, color:TYPE_COLOR[type]||TYPE_COLOR.otro, timestamp:article.timestamp||new Date().toISOString(), dataSource:'rss-news' }, KEY);
+                step.saved = ok;
+              } catch(e){ step.err = e.message; }
+              trace.push(step);
+            }
+            const ev = await readEvents(env.EVENTS_KV, KEY);
+            return new Response(JSON.stringify({ total:ev.length, trace }, null, 2), {headers:{'Content-Type':'application/json'}});
+          } catch(e){
+            return new Response(JSON.stringify({ fatalErr:e.message, trace }, null, 2), {headers:{'Content-Type':'application/json'}});
+          }
+        }
         ctx.waitUntil(maybeScan(env, city));
         return new Response('{"ok":true}',{headers:{'Content-Type':'application/json'}});
       }
@@ -844,7 +853,7 @@ export default {
           pipeline: {
             primary: 'Groq compound + web search (IA)',
             fallback1: 'News API (Reddit) + análisis IA',
-            fallback2: 'Bing News RSS (noticias del día) + IA opcional',
+            fallback2: 'Google News + Bing News RSS (noticias del día) + IA',
             fallback3: 'Manual seed via /api/seed',
           },
           groqKeys: keys.length,
