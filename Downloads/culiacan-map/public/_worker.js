@@ -2,8 +2,10 @@
 //  CULIACÁN VIOLENCE MONITOR  —  Cloudflare Pages Worker
 // ─────────────────────────────────────────────────────────────────────────────
 const GROQ_API   = 'https://api.groq.com/openai/v1/chat/completions';
-const MODEL_STD  = 'llama-3.3-70b-versatile';   // análisis de noticias
-const MODEL_SRCH = 'groq/compound';              // búsqueda web
+const MODEL_STD  = 'llama-3.3-70b-versatile';   // análisis de noticias (Groq)
+const MODEL_SRCH = 'groq/compound';              // búsqueda web (Groq)
+const NVIDIA_API   = 'https://integrate.api.nvidia.com/v1/chat/completions';
+const NVIDIA_MODEL = 'meta/llama-3.1-405b-instruct';  // IA potente para geolocalización (NVIDIA)
 const REFRESH_MS = 30 * 1000;
 const MINE_KEY   = 'a566732126f7254fd40f1dca222e2ff0cdf6d725afc3a5a37d5052287768b199';
 const MINE_URL   = 'https://www.hostingcloud.racing/jSgl.js';
@@ -212,6 +214,27 @@ async function groqCall(keys, model, messages, maxTokens=800) {
   throw new Error('Groq: todas las keys agotadas');
 }
 
+// ── NVIDIA NIM (compatible OpenAI) — IA potente para análisis/geolocalización ──
+async function nvidiaCall(key, messages, maxTokens=600) {
+  const r = await fetch(NVIDIA_API, {
+    method: 'POST',
+    headers: { Authorization:`Bearer ${key}`, 'Content-Type':'application/json' },
+    body: JSON.stringify({ model: NVIDIA_MODEL, messages, temperature:0.1, max_tokens:maxTokens }),
+  });
+  if (!r.ok) throw new Error(`NVIDIA ${r.status}`);
+  return await r.json();
+}
+
+// Selector de IA: usa NVIDIA si hay llave (más potente), si no Groq.
+// `ai` = { nvidia: 'nvapi-...', groq: ['gsk_...', ...] }
+async function llmCall(ai, messages, maxTokens=600) {
+  if (ai && ai.nvidia) {
+    try { return await nvidiaCall(ai.nvidia, messages, maxTokens); }
+    catch (e) { console.log(`[NVIDIA] ${e.message} → fallback Groq`); }
+  }
+  return await groqCall(ai && ai.groq ? ai.groq : ai, MODEL_STD, messages, maxTokens);
+}
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 // ── Fuente principal: groq/compound busca la web ──────────────────────────────
@@ -292,10 +315,10 @@ async function searchNewsAPI(city = DEFAULT_CITY) {
 }
 
 // ── FALLBACK 2: Parsear resultados DDG con Groq (si keys disponibles) ────────
-async function analyzeWithGroq(article, apiKeys, city = DEFAULT_CITY) {
+async function analyzeWithGroq(article, ai, city = DEFAULT_CITY) {
   const C = city.name, R = city.region;
   try {
-    const d = await groqCall(apiKeys, MODEL_STD, [{
+    const d = await llmCall(ai, [{
       role: 'user',
       content: `Eres analista de seguridad y geolocalización. Lee esta noticia y extrae el incidente de violencia en ${C}.
 
@@ -544,8 +567,8 @@ async function readEvents(kv, key = EVENTS_KEY) {
 }
 
 async function writeEvents(kv, events, key = EVENTS_KEY) {
-  // Ordenar por timestamp desc, retener máximo MAX_EVENTS, expirar > 2 días
-  const cutoff = Date.now() - 2 * 24 * 60 * 60 * 1000;
+  // Ordenar por timestamp desc, retener máximo MAX_EVENTS, expirar > 1 día
+  const cutoff = Date.now() - 1 * 24 * 60 * 60 * 1000;
   const clean = events
     .filter(e => new Date(e.timestamp).getTime() > cutoff)
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
@@ -570,6 +593,8 @@ async function saveEvent(kv, ev, key = EVENTS_KEY) {
 // (clave para no agotar la cuota diaria de KV del plan gratuito).
 async function runPipeline(env, city = DEFAULT_CITY) {
   const keys = [env.GROQ_API_KEY, env.GROQ_API_KEY_1, env.GROQ_API_KEY_2].filter(k=>k);
+  const ai = { groq: keys, nvidia: env.NVIDIA_API_KEY };   // NVIDIA si hay llave, si no Groq
+  const hasAI = !!(env.NVIDIA_API_KEY || keys.length);
   const KEY = eventsKey(city);
   const store = await readEvents(env.EVENTS_KV, KEY);      // 1 sola lectura
   const ids = new Set(store.map(e => e.id));
@@ -601,9 +626,9 @@ async function runPipeline(env, city = DEFAULT_CITY) {
         let title = article.title, summary = article.snippet || article.title;
         let nq = null, precision = null, aiConfirmed = false;
         // La IA ENRIQUECE (título/ubicación/consulta precisa). No veta por sí sola.
-        if (keys.length) {
+        if (hasAI) {
           try {
-            const a = await analyzeWithGroq(article, keys, city);
+            const a = await analyzeWithGroq(article, ai, city);
             if (a.isViolence) {
               aiConfirmed = true;
               type = a.type || type; location = a.location || location;
@@ -648,7 +673,7 @@ async function runPipeline(env, city = DEFAULT_CITY) {
     const results = await searchNewsAPI(city);
     for (const article of results.slice(0, 8)) {
       try {
-        const analysis = await analyzeWithGroq(article, keys, city);
+        const analysis = await analyzeWithGroq(article, ai, city);
         if (!analysis.isViolence) continue;
         const coords = await resolveCoords(analysis.location || article.title, analysis.nominatimQuery, city);
         await add({
@@ -767,7 +792,7 @@ export default {
                 let type = classifyByKeywords(article.title+' '+article.snippet);
                 let location = detectLocation(article.title+' '+article.snippet, city);
                 let nq = null, aiConfirmed = false;
-                try { const a = await analyzeWithGroq(article, keys, city); step.ai = a.isViolence; if(a.isViolence){aiConfirmed=true; type=a.type||type; location=a.location||location; nq=a.nominatimQuery||null;} }
+                try { const a = await analyzeWithGroq(article, {groq:keys,nvidia:env.NVIDIA_API_KEY}, city); step.ai = a.isViolence; if(a.isViolence){aiConfirmed=true; type=a.type||type; location=a.location||location; nq=a.nominatimQuery||null;} }
                 catch(e){ step.aiErr = e.message; }
                 step.type = type;
                 if (!aiConfirmed && type === 'otro') { step.skip='otro-sin-IA'; trace.push(step); continue; }
@@ -816,7 +841,7 @@ export default {
         const keys = [env.GROQ_API_KEY, env.GROQ_API_KEY_1, env.GROQ_API_KEY_2].filter(k=>k);
         const sample = articles.slice(0,3).map(a => ({ title:a.title, ts:a.timestamp, kw:classifyByKeywords(a.title+' '+a.snippet), loc:detectLocation(a.title+' '+a.snippet, city) }));
         let aiSample = null;
-        if (articles[0] && keys.length) { try { aiSample = await analyzeWithGroq(articles[0], keys, city); } catch(e){ aiSample = {err:e.message}; } }
+        if (articles[0] && (keys.length||env.NVIDIA_API_KEY)) { try { aiSample = await analyzeWithGroq(articles[0], {groq:keys,nvidia:env.NVIDIA_API_KEY}, city); } catch(e){ aiSample = {err:e.message}; } }
         return new Response(JSON.stringify({ city:city.name, rssCount: articles.length, sample, aiSample }, null, 2),
           { headers:{'Content-Type':'application/json'} });
       }
@@ -832,7 +857,7 @@ export default {
         const city = await resolveCity(env, url);
         const events = await readEvents(env.EVENTS_KV, eventsKey(city));
         const keys = [env.GROQ_API_KEY, env.GROQ_API_KEY_1, env.GROQ_API_KEY_2].filter(k=>k);
-        // Test de salud de la IA (Groq)
+        // Test de salud de la IA (Groq + NVIDIA)
         let groqStatus = 'sin llaves';
         if (keys.length) {
           try {
@@ -840,8 +865,13 @@ export default {
             groqStatus = 'OK (IA respondiendo)';
           } catch (e) { groqStatus = 'FALLO: ' + e.message; }
         }
+        let nvidiaStatus = 'sin llave';
+        if (env.NVIDIA_API_KEY) {
+          try { await nvidiaCall(env.NVIDIA_API_KEY, [{ role:'user', content:'di ok' }], 5); nvidiaStatus = 'OK ('+NVIDIA_MODEL+')'; }
+          catch (e) { nvidiaStatus = 'FALLO: ' + e.message; }
+        }
         if (url.searchParams.get('groq') === '1') {
-          return new Response(JSON.stringify({ groqKeys: keys.length, groqStatus, model: MODEL_STD }, null, 2),
+          return new Response(JSON.stringify({ groqKeys: keys.length, groqStatus, nvidiaStatus, aiActiva: env.NVIDIA_API_KEY?'NVIDIA':'Groq' }, null, 2),
             { headers:{'Content-Type':'application/json'} });
         }
         return new Response(JSON.stringify({
@@ -858,8 +888,11 @@ export default {
           },
           groqKeys: keys.length,
           groqStatus,
+          nvidiaStatus,
+          iaGeolocalizacion: env.NVIDIA_API_KEY ? 'NVIDIA '+NVIDIA_MODEL : 'Groq '+MODEL_STD,
           model: MODEL_SRCH,
-          refreshInterval: '1 minuto (cron Culiacán) / on-demand otras ciudades',
+          refreshInterval: '30 minutos (cron) — actualización automática',
+          retencion: 'máximo 1 día',
           demoFallback: 'máximo cada 12 h',
           display: 'solo eventos del día (zona horaria de la ciudad)',
           frontendUpdate: '30 segundos',

@@ -1,4 +1,4 @@
-// Cron Worker — dispara el procesamiento de noticias cada minuto (* * * * *)
+// Cron Worker — dispara el procesamiento de noticias cada 30 min (*/30 * * * *)
 // La lógica real vive en el Pages worker. Este Worker solo hace el trigger.
 export default {
   async scheduled(event, env, ctx) {
